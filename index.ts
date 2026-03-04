@@ -10,7 +10,7 @@
  * - /plannotator command or Ctrl+Alt+P to toggle
  * - --plan flag to start in planning mode
  * - --plan-file flag to customize the plan file path
- * - Bash restricted to read-only commands during planning
+ * - Bash unrestricted during planning (prompt-guided)
  * - Write restricted to plan file only during planning
  * - exit_plan_mode tool with browser-based visual approval
  * - [DONE:n] markers for execution progress tracking
@@ -26,7 +26,7 @@ import type { AssistantMessage, TextContent } from "@mariozechner/pi-ai";
 import { Type } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Key } from "@mariozechner/pi-tui";
-import { isSafeCommand, markCompletedSteps, parseChecklist, type ChecklistItem } from "./utils.js";
+import { markCompletedSteps, parseChecklist, type ChecklistItem } from "./utils.js";
 import {
   startPlanReviewServer,
   startReviewServer,
@@ -51,10 +51,8 @@ try {
   // HTML not built yet — review feature will be unavailable
 }
 
-// Tool sets by phase
-const PLANNING_TOOLS = ["read", "bash", "grep", "find", "ls", "write", "edit", "exit_plan_mode"];
-const EXECUTION_TOOLS = ["read", "bash", "edit", "write"];
-const NORMAL_TOOLS = ["read", "bash", "edit", "write"];
+/** Extra tools to ensure are available during planning (on top of whatever is already active). */
+const PLANNING_EXTRA_TOOLS = ["grep", "find", "ls", "exit_plan_mode"];
 
 type Phase = "idle" | "planning" | "executing";
 
@@ -73,11 +71,12 @@ export default function plannotator(pi: ExtensionAPI): void {
   let phase: Phase = "idle";
   let planFilePath = "PLAN.md";
   let checklistItems: ChecklistItem[] = [];
+  let preplanTools: string[] | null = null;
 
   // ── Flags ────────────────────────────────────────────────────────────
 
   pi.registerFlag("plan", {
-    description: "Start in plan mode (read-only exploration)",
+    description: "Start in plan mode (restricted exploration and planning)",
     type: "boolean",
     default: false,
   });
@@ -126,10 +125,26 @@ export default function plannotator(pi: ExtensionAPI): void {
     pi.appendEntry("plannotator", { phase, planFilePath });
   }
 
+  /** Apply tool visibility for the current phase, preserving tools from other extensions. */
+  function applyToolsForPhase(): void {
+    if (phase === "planning") {
+      const base = preplanTools ?? pi.getActiveTools();
+      const toolSet = new Set(base);
+      for (const t of PLANNING_EXTRA_TOOLS) toolSet.add(t);
+      pi.setActiveTools([...toolSet]);
+    } else if (preplanTools) {
+      // Restore pre-plan tool set (removes exit_plan_mode, etc.)
+      pi.setActiveTools(preplanTools);
+      preplanTools = null;
+    }
+    // If no preplanTools (e.g. session restore to executing/idle), leave tools as-is
+  }
+
   function enterPlanning(ctx: ExtensionContext): void {
     phase = "planning";
     checklistItems = [];
-    pi.setActiveTools(PLANNING_TOOLS);
+    preplanTools = pi.getActiveTools();
+    applyToolsForPhase();
     updateStatus(ctx);
     updateWidget(ctx);
     persistState();
@@ -139,7 +154,7 @@ export default function plannotator(pi: ExtensionAPI): void {
   function exitToIdle(ctx: ExtensionContext): void {
     phase = "idle";
     checklistItems = [];
-    pi.setActiveTools(NORMAL_TOOLS);
+    applyToolsForPhase();
     updateStatus(ctx);
     updateWidget(ctx);
     persistState();
@@ -158,7 +173,24 @@ export default function plannotator(pi: ExtensionAPI): void {
 
   pi.registerCommand("plannotator", {
     description: "Toggle plannotator (file-based plan mode)",
-    handler: async (_args, ctx) => togglePlanMode(ctx),
+    handler: async (args, ctx) => {
+      if (phase !== "idle") {
+        exitToIdle(ctx);
+        return;
+      }
+
+      // Accept path as argument: /plannotator plans/auth.md
+      let targetPath = args?.trim() || undefined;
+
+      // No arg — prompt for file path interactively
+      if (!targetPath && ctx.hasUI) {
+        targetPath = await ctx.ui.input("Plan file path", planFilePath);
+        if (targetPath === undefined) return; // cancelled
+      }
+
+      if (targetPath) planFilePath = targetPath;
+      enterPlanning(ctx);
+    },
   });
 
   pi.registerCommand("plannotator-status", {
@@ -170,6 +202,27 @@ export default function plannotator(pi: ExtensionAPI): void {
         parts.push(`Progress: ${done}/${checklistItems.length}`);
       }
       ctx.ui.notify(parts.join("\n"), "info");
+    },
+  });
+
+  pi.registerCommand("plannotator-set-file", {
+    description: "Change the plan file path",
+    handler: async (args, ctx) => {
+      let targetPath = args?.trim() || undefined;
+
+      if (!targetPath && ctx.hasUI) {
+        targetPath = await ctx.ui.input("Plan file path", planFilePath);
+        if (targetPath === undefined) return; // cancelled
+      }
+
+      if (!targetPath) {
+        ctx.ui.notify(`Current plan file: ${planFilePath}`, "info");
+        return;
+      }
+
+      planFilePath = targetPath;
+      persistState();
+      ctx.ui.notify(`Plan file changed to: ${planFilePath}`);
     },
   });
 
@@ -266,7 +319,7 @@ export default function plannotator(pi: ExtensionAPI): void {
     label: "Exit Plan Mode",
     description:
       "Submit your plan for user review. " +
-      "Call this after drafting or revising your plan in PLAN.md. " +
+      "Call this after drafting or revising your plan file. " +
       "The user will review the plan in a visual browser UI and can approve, deny with feedback, or annotate it. " +
       "If denied, use the edit tool to make targeted revisions (not write), then call this again.",
     parameters: Type.Object({
@@ -319,7 +372,7 @@ export default function plannotator(pi: ExtensionAPI): void {
       // Non-interactive or no HTML: auto-approve
       if (!ctx.hasUI || !planHtmlContent) {
         phase = "executing";
-        pi.setActiveTools(EXECUTION_TOOLS);
+        applyToolsForPhase();
         persistState();
         return {
           content: [
@@ -348,7 +401,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 
       if (result.approved) {
         phase = "executing";
-        pi.setActiveTools(EXECUTION_TOOLS);
+        applyToolsForPhase();
         updateStatus(ctx);
         updateWidget(ctx);
         persistState();
@@ -398,19 +451,9 @@ export default function plannotator(pi: ExtensionAPI): void {
 
   // ── Event Handlers ───────────────────────────────────────────────────
 
-  // Gate writes and bash during planning
+  // Gate writes during planning
   pi.on("tool_call", async (event, ctx) => {
     if (phase !== "planning") return;
-
-    if (event.toolName === "bash") {
-      const command = event.input.command as string;
-      if (!isSafeCommand(command)) {
-        return {
-          block: true,
-          reason: `Plannotator: command blocked (not in read-only allowlist).\nCommand: ${command}`,
-        };
-      }
-    }
 
     if (event.toolName === "write") {
       const targetPath = resolve(ctx.cwd, event.input.path as string);
@@ -444,7 +487,9 @@ export default function plannotator(pi: ExtensionAPI): void {
           content: `[PLANNOTATOR - PLANNING PHASE]
 You are in plan mode. You MUST NOT make any changes to the codebase — no edits, no commits, no installs, no destructive commands. The ONLY file you may write to or edit is the plan file: ${planFilePath}.
 
-Available tools: read, bash (read-only commands only), grep, find, ls, write (${planFilePath} only), edit (${planFilePath} only), exit_plan_mode
+Available tools: read, bash, grep, find, ls, write (${planFilePath} only), edit (${planFilePath} only), exit_plan_mode
+
+Do not run destructive bash commands (rm, git push, npm install, etc.) — focus on reading and exploring the codebase. Web fetching (curl, wget) is fine.
 
 ## Iterative Planning Workflow
 
@@ -590,7 +635,7 @@ Execute each step in order. After completing a step, include [DONE:n] in your re
       );
       phase = "idle";
       checklistItems = [];
-      pi.setActiveTools(NORMAL_TOOLS);
+      applyToolsForPhase();
       updateStatus(ctx);
       updateWidget(ctx);
       persistState();
@@ -657,9 +702,7 @@ Execute each step in order. After completing a step, include [DONE:n] in your re
 
     // Apply tool restrictions for current phase
     if (phase === "planning") {
-      pi.setActiveTools(PLANNING_TOOLS);
-    } else if (phase === "executing") {
-      pi.setActiveTools(EXECUTION_TOOLS);
+      applyToolsForPhase();
     }
 
     updateStatus(ctx);

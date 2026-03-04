@@ -45,9 +45,9 @@ Start Pi in plan mode:
 pi --plan
 ```
 
-Or toggle it during a session with `/plannotator` or `Ctrl+Alt+P`.
+Or toggle it during a session with `/plannotator` or `Ctrl+Alt+P`. The command accepts an optional file path argument (`/plannotator plans/auth.md`) or prompts you to choose one interactively.
 
-In plan mode the agent is restricted to read-only tools. It explores your codebase, then writes a plan to `PLAN.md` using markdown checklists:
+In plan mode the agent is restricted — destructive commands are blocked, writes are limited to the plan file. It explores your codebase, then writes a plan using markdown checklists:
 
 ```markdown
 - [ ] Add validation to the login form
@@ -79,7 +79,8 @@ During execution, the agent marks completed steps with `[DONE:n]` markers. Progr
 
 | Command | Description |
 |---------|-------------|
-| `/plannotator` | Toggle plan mode on/off |
+| `/plannotator [path]` | Toggle plan mode. Accepts optional file path or prompts interactively |
+| `/plannotator-set-file <path>` | Change the plan file path mid-session |
 | `/plannotator-status` | Show current phase, plan file, and progress |
 | `/plannotator-review` | Open code review UI for current changes |
 | `/plannotator-annotate <file>` | Open markdown file in annotation UI |
@@ -102,8 +103,9 @@ During execution, the agent marks completed steps with `[DONE:n]` markers. Progr
 The extension manages a state machine: **idle** → **planning** → **executing** → **idle**.
 
 During **planning**:
-- Tools restricted to: `read`, `bash` (read-only commands only), `grep`, `find`, `ls`, `write` (plan file only), `exit_plan_mode`
-- `edit` is disabled, bash is gated to a read-only allowlist, writes only allowed to the plan file
+- All tools from other extensions remain available
+- Bash is unrestricted — the agent is guided by the system prompt not to run destructive commands
+- Writes and edits restricted to the plan file only
 
 During **executing**:
 - Full tool access: `read`, `bash`, `edit`, `write`

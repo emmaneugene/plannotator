@@ -7,7 +7,7 @@
  */
 
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { execSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import os from "node:os";
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, basename } from "node:path";
@@ -54,21 +54,34 @@ export function openBrowser(url: string): void {
     const platform = process.platform;
     const wsl = platform === "linux" && os.release().toLowerCase().includes("microsoft");
 
+    let cmd: string;
+    let args: string[];
+
     if (browser) {
       if (process.env.PLANNOTATOR_BROWSER && platform === "darwin") {
-        execSync(`open -a ${JSON.stringify(browser)} ${JSON.stringify(url)}`, { stdio: "ignore" });
+        cmd = "open";
+        args = ["-a", browser, url];
       } else if (platform === "win32" || wsl) {
-        execSync(`cmd.exe /c start "" ${JSON.stringify(browser)} ${JSON.stringify(url)}`, { stdio: "ignore" });
+        cmd = "cmd.exe";
+        args = ["/c", "start", "", browser, url];
       } else {
-        execSync(`${JSON.stringify(browser)} ${JSON.stringify(url)}`, { stdio: "ignore" });
+        cmd = browser;
+        args = [url];
       }
     } else if (platform === "win32" || wsl) {
-      execSync(`cmd.exe /c start "" ${JSON.stringify(url)}`, { stdio: "ignore" });
+      cmd = "cmd.exe";
+      args = ["/c", "start", "", url];
     } else if (platform === "darwin") {
-      execSync(`open ${JSON.stringify(url)}`, { stdio: "ignore" });
+      cmd = "open";
+      args = [url];
     } else {
-      execSync(`xdg-open ${JSON.stringify(url)}`, { stdio: "ignore" });
+      cmd = "xdg-open";
+      args = [url];
     }
+
+    const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
+    child.once("error", () => {});
+    child.unref();
   } catch {
     // Silently fail
   }

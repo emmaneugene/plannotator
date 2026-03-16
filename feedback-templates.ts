@@ -1,6 +1,8 @@
 /**
- * Vendored copy of packages/shared/feedback-templates.ts for source installs.
- * Keep this file in sync with the shared source via `bun run build:pi`.
+ * Shared feedback templates for all agent integrations.
+ *
+ * The plan deny template was tuned in #224 / commit 3dca977 to use strong
+ * directive framing — Claude was ignoring softer phrasing.
  */
 
 export interface PlanDenyFeedbackOptions {

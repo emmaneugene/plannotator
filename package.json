@@ -24,10 +24,11 @@
     "utils.ts",
     "README.md",
     "plannotator.html",
-    "review-editor.html"
+    "review-editor.html",
+    "feedback-templates.ts"
   ],
   "scripts": {
-    "build": "cp ../hook/dist/index.html plannotator.html && cp ../hook/dist/review.html review-editor.html",
+    "build": "cp ../hook/dist/index.html plannotator.html && cp ../hook/dist/review.html review-editor.html && cp ../../packages/shared/feedback-templates.ts feedback-templates.ts",
     "prepublishOnly": "cd ../.. && bun run build:pi"
   },
   "peerDependencies": {

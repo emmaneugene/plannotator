@@ -35,6 +35,7 @@ import {
   runGitDiff,
   openBrowser,
 } from "./server.js";
+import { planDenyFeedback } from "./feedback-templates.js";
 
 // Load HTML at runtime (jiti doesn't support import attributes)
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -445,7 +446,7 @@ export default function plannotator(pi: ExtensionAPI): void {
         content: [
           {
             type: "text",
-            text: `Plan not approved.\n\nUser feedback: ${feedbackText}\n\nRevise the plan:\n1. Read ${planFilePath} to see the current plan.\n2. Use the edit tool to make targeted changes addressing the feedback above — do not rewrite the entire file.\n3. Call exit_plan_mode again when ready.`,
+            text: planDenyFeedback(feedbackText, "exit_plan_mode", { planFilePath }),
           },
         ],
         details: { approved: false, feedback: feedbackText },

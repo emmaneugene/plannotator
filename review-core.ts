@@ -366,7 +366,11 @@ export async function runGitDiff(
         return { patch: "", label: "Unknown diff type" };
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const raw = error instanceof Error ? error.message : String(error);
+    // Git dumps its entire --help output on some failures; keep only the
+    // first meaningful line so the UI doesn't vomit a wall of text.
+    const firstLine = raw.split("\n").find((l) => l.trim().length > 0) ?? raw;
+    const message = firstLine.length > 200 ? firstLine.slice(0, 200) + "…" : firstLine;
     return {
       patch: "",
       label: cwd ? "Worktree error" : `Error: ${diffType}`,

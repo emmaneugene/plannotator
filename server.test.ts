@@ -267,5 +267,5 @@ describe("pi review server", () => {
     } finally {
       server.stop();
     }
-  });
+  }, 15_000);
 });

@@ -21,6 +21,7 @@
   "files": [
     "index.ts",
     "server.ts",
+    "tool-scope.ts",
     "server/",
     "generated/",
     "README.md",

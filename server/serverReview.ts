@@ -156,7 +156,7 @@ export async function startReviewServer(options: {
 	let aiSessionManager: { disposeAll: () => void } | null = null;
 	let aiRegistry: { disposeAll: () => void } | null = null;
 	try {
-		const ai = await import("@plannotator/ai");
+		const ai = await import("../generated/ai/index.js");
 		const registry = new ai.ProviderRegistry();
 		const sessionManager = new ai.SessionManager();
 
@@ -177,7 +177,7 @@ export async function startReviewServer(options: {
 		// Claude Agent SDK
 		try {
 			// @ts-ignore — dynamic import; Bun-only types resolved at runtime
-			await import("@plannotator/ai/providers/claude-agent-sdk");
+			await import("../generated/ai/providers/claude-agent-sdk.js");
 			const claudePath = whichCmd("claude");
 			const provider = await ai.createProvider({
 				type: "claude-agent-sdk",
@@ -192,7 +192,7 @@ export async function startReviewServer(options: {
 		// Codex SDK
 		try {
 			// @ts-ignore — dynamic import; Bun-only types resolved at runtime
-			await import("@plannotator/ai/providers/codex-sdk");
+			await import("../generated/ai/providers/codex-sdk.js");
 			await import("@openai/codex-sdk");
 			const codexPath = whichCmd("codex");
 			const provider = await ai.createProvider({
@@ -207,7 +207,7 @@ export async function startReviewServer(options: {
 
 		// Pi SDK (Node.js variant)
 		try {
-			await import("@plannotator/ai/providers/pi-sdk-node");
+			await import("../generated/ai/providers/pi-sdk-node.js");
 			const piPath = whichCmd("pi");
 			if (piPath) {
 				const provider = await ai.createProvider({
@@ -229,7 +229,7 @@ export async function startReviewServer(options: {
 		// OpenCode SDK
 		try {
 			// @ts-ignore — dynamic import; Bun-only types resolved at runtime
-			await import("@plannotator/ai/providers/opencode-sdk");
+			await import("../generated/ai/providers/opencode-sdk.js");
 			const opencodePath = whichCmd("opencode");
 			if (opencodePath) {
 				const provider = await ai.createProvider({

@@ -30,6 +30,7 @@ export async function startAnnotateServer(options: {
 	htmlContent: string;
 	origin?: string;
 	mode?: string;
+	folderPath?: string;
 	sharingEnabled?: boolean;
 	shareBaseUrl?: string;
 	pasteApiUrl?: string;
@@ -71,7 +72,7 @@ export async function startAnnotateServer(options: {
 				shareBaseUrl,
 				pasteApiUrl,
 				repoInfo,
-				projectRoot: process.cwd(),
+				projectRoot: options.folderPath || process.cwd(),
 			});
 		} else if (url.pathname === "/api/image") {
 			handleImageRequest(res, url);

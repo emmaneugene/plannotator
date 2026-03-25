@@ -18,7 +18,7 @@
  * - /plannotator-annotate command for markdown annotation
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
@@ -35,6 +35,8 @@ import {
 	parseChecklist,
 } from "./generated/checklist.js";
 import { planDenyFeedback } from "./generated/feedback-templates.js";
+import { hasMarkdownFiles } from "./generated/resolve-file.js";
+import { FILE_BROWSER_EXCLUDED } from "./generated/reference-common.js";
 import { openBrowser } from "./server/network.js";
 import {
 	type AnnotateServerResult,
@@ -336,11 +338,11 @@ export default function plannotator(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("plannotator-annotate", {
-		description: "Open markdown file in annotation UI",
+		description: "Open markdown file or folder in annotation UI",
 		handler: async (args, ctx) => {
 			const filePath = args?.trim();
 			if (!filePath) {
-				ctx.ui.notify("Usage: /plannotator-annotate <file.md>", "error");
+				ctx.ui.notify("Usage: /plannotator-annotate <file.md | folder/>", "error");
 				return;
 			}
 			if (!planHtmlContent) {
@@ -357,15 +359,41 @@ export default function plannotator(pi: ExtensionAPI): void {
 				return;
 			}
 
-			ctx.ui.notify(`Opening annotation UI for ${filePath}...`, "info");
+			// Check if the argument is a directory (folder annotation mode)
+			let isFolder = false;
+			try {
+				isFolder = statSync(absolutePath).isDirectory();
+			} catch {
+				ctx.ui.notify(`Cannot access: ${absolutePath}`, "error");
+				return;
+			}
 
-			const markdown = readFileSync(absolutePath, "utf-8");
+			let markdown: string;
+			let folderPath: string | undefined;
+			let mode: string | undefined;
+
+			if (isFolder) {
+				if (!hasMarkdownFiles(absolutePath, FILE_BROWSER_EXCLUDED)) {
+					ctx.ui.notify(`No markdown files found in ${absolutePath}`, "error");
+					return;
+				}
+				markdown = "";
+				folderPath = absolutePath;
+				mode = "annotate-folder";
+				ctx.ui.notify(`Opening annotation UI for folder ${filePath}...`, "info");
+			} else {
+				markdown = readFileSync(absolutePath, "utf-8");
+				ctx.ui.notify(`Opening annotation UI for ${filePath}...`, "info");
+			}
+
 			let server: AnnotateServerResult;
 			try {
 				server = await startAnnotateServer({
 					markdown,
 					filePath: absolutePath,
 					origin: "pi",
+					mode,
+					folderPath,
 					htmlContent: planHtmlContent,
 					sharingEnabled: process.env.PLANNOTATOR_SHARE !== "disabled",
 					shareBaseUrl: process.env.PLANNOTATOR_SHARE_URL || undefined,
@@ -382,8 +410,11 @@ export default function plannotator(pi: ExtensionAPI): void {
 			const result = await runBrowserReview(server, ctx);
 
 			if (result.feedback) {
+				const header = isFolder
+					? `# Markdown Annotations\n\nFolder: ${absolutePath}\n\n`
+					: `# Markdown Annotations\n\nFile: ${absolutePath}\n\n`;
 				pi.sendUserMessage(
-					`# Markdown Annotations\n\nFile: ${absolutePath}\n\n${result.feedback}\n\nPlease address the annotation feedback above.`,
+					`${header}${result.feedback}\n\nPlease address the annotation feedback above.`,
 				);
 			} else {
 				ctx.ui.notify("Annotation closed (no feedback).", "info");

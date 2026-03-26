@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { Readable } from "node:stream";
 
 import { contentHash, deleteDraft } from "../generated/draft.js";
+import { saveConfig, detectGitUser, getServerConfig } from "../generated/config.js";
 
 export type {
 	DiffOption,
@@ -116,6 +117,7 @@ export async function startReviewServer(options: {
 	shareBaseUrl?: string;
 	prMetadata?: PRMetadata;
 }): Promise<ReviewServerResult> {
+	const gitUser = detectGitUser();
 	const draftKey = contentHash(options.rawPatch);
 	const prMeta = options.prMetadata;
 	const isPRMode = !!prMeta;
@@ -297,6 +299,7 @@ export async function startReviewServer(options: {
 				...(isPRMode && { prMetadata: prMeta, platformUser }),
 				...(isPRMode && initialViewedFiles.length > 0 && { viewedFiles: initialViewedFiles }),
 				...(currentError ? { error: currentError } : {}),
+				serverConfig: getServerConfig(gitUser),
 			});
 		} else if (url.pathname === "/api/diff/switch" && req.method === "POST") {
 			if (isPRMode) {
@@ -458,6 +461,16 @@ export async function startReviewServer(options: {
 				defaultCwd,
 			);
 			json(res, result);
+		} else if (url.pathname === "/api/config" && req.method === "POST") {
+			try {
+				const body = (await parseBody(req)) as { displayName?: string };
+				if (body.displayName !== undefined) {
+					saveConfig({ displayName: body.displayName });
+				}
+				json(res, { ok: true });
+			} catch {
+				json(res, { error: "Invalid request" }, 400);
+			}
 		} else if (url.pathname === "/api/image") {
 			handleImageRequest(res, url);
 		} else if (url.pathname === "/api/upload" && req.method === "POST") {

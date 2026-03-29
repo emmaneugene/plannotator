@@ -79,10 +79,11 @@ export async function startAnnotateServer(options: {
 			});
 		} else if (url.pathname === "/api/config" && req.method === "POST") {
 			try {
-				const body = (await parseBody(req)) as { displayName?: string };
-				if (body.displayName !== undefined) {
-					saveConfig({ displayName: body.displayName });
-				}
+				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown> };
+				const toSave: Record<string, unknown> = {};
+				if (body.displayName !== undefined) toSave.displayName = body.displayName;
+				if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
+				if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
 				json(res, { ok: true });
 			} catch {
 				json(res, { error: "Invalid request" }, 400);

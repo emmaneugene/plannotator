@@ -16,6 +16,7 @@ import { listenOnPort } from "./network.js";
 
 import { getRepoInfo } from "./project.js";
 import { handleDocRequest, handleFileBrowserRequest } from "./reference.js";
+import { createExternalAnnotationHandler } from "./external-annotations.js";
 
 export interface AnnotateServerResult {
 	port: number;
@@ -61,8 +62,12 @@ export async function startAnnotateServer(options: {
 	// Detect repo info (cached for this session)
 	const repoInfo = getRepoInfo();
 
+	const externalAnnotations = createExternalAnnotationHandler("plan");
+
 	const server = createServer(async (req, res) => {
 		const url = requestUrl(req);
+
+		if (await externalAnnotations.handle(req, res, url)) return;
 
 		if (url.pathname === "/api/plan" && req.method === "GET") {
 			json(res, {

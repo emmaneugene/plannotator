@@ -23,6 +23,8 @@
     "index.ts",
     "server.ts",
     "tool-scope.ts",
+    "config.ts",
+    "plannotator.json",
     "server/",
     "generated/",
     "README.md",

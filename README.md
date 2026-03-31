@@ -63,6 +63,87 @@ When the agent calls `plannotator_submit_plan`, the Plannotator UI opens in your
 
 The agent iterates on the plan until you approve, then executes with full tool access. On resubmission, Plan Diff highlights what changed since the previous version.
 
+### Configuring per-phase behavior
+
+Plannotator loads configuration in three layers:
+
+1. Built-in base config shipped with the package: `plannotator.json`
+2. Global user config: `~/.pi/agent/plannotator.json`
+3. Project-local config: `<cwd>/.pi/plannotator.json`
+
+Later layers overwrite earlier ones. If a field is omitted, it inherits the value from lower-precedence layers. If a value is set to `null`, an empty string, or an empty array, it clears the inherited value instead of merging it. You can also set `defaults` or an entire phase object to `null` to clear all inherited settings from lower-precedence layers.
+
+#### Top-level shape
+
+```json
+{
+  "defaults": {
+    "model": { "provider": "anthropic", "id": "claude-sonnet-4-5" },
+    "thinking": "medium",
+    "activeTools": ["read", "bash"],
+    "statusLabel": "Ready",
+    "systemPrompt": "Optional prompt template"
+  },
+  "phases": {
+    "planning": {
+      "model": null,
+      "thinking": null,
+      "activeTools": ["grep", "find", "ls", "plannotator_submit_plan"],
+      "statusLabel": "⏸ plan",
+      "systemPrompt": "[PLANNING]\nPlan file: ${planFilePath}"
+    },
+    "executing": {
+      "model": { "provider": "anthropic", "id": "claude-sonnet-4-5" },
+      "thinking": "high",
+      "activeTools": [],
+      "statusLabel": "",
+      "systemPrompt": "[EXECUTING]\nRemaining steps:\n${todoList}"
+    },
+    "reviewing": {
+      "systemPrompt": "..."
+    }
+  }
+}
+```
+
+#### Option reference
+
+| Option | Type | Meaning |
+|--------|------|---------|
+| `defaults` | object | Base values applied to every phase before phase-specific overrides |
+| `phases` | object | Phase-specific overrides |
+| `phases.planning` | object | Settings for planning mode |
+| `phases.executing` | object | Settings for execution mode |
+| `phases.reviewing` | object | Reserved for future review-mode customization |
+| `model` | `{ provider, id }` \| `null` | Sets the model for the phase; `null` leaves the current model unchanged |
+| `thinking` | `minimal` \| `low` \| `medium` \| `high` \| `xhigh` \| `null` | Sets the thinking level; `null` leaves the current level unchanged |
+| `activeTools` | string[] \| `null` | Extra tools to enable for the phase; `[]` or `null` means no extra phase tools |
+| `statusLabel` | string \| `null` | Optional UI label for the phase; empty/null clears it |
+| `systemPrompt` | string \| `null` | Phase system prompt template; empty/null disables prompt injection |
+
+#### Prompt variables
+
+Use these inside `systemPrompt` strings:
+
+- `${planFilePath}` — current plan file path
+- `${todoList}` — remaining checklist items as markdown checkboxes
+- `${completedCount}` — completed checklist count
+- `${totalCount}` — total checklist count
+- `${remainingCount}` — remaining checklist count
+- `${phase}` — current runtime phase (`planning`, `executing`, `reviewing`, or `idle`)
+
+#### Behavior notes
+
+- Unknown template variables trigger a warning in the UI and are rendered as empty strings.
+- `activeTools` are additive with the tools currently active in the session, so Plannotator still preserves tools provided by other extensions.
+- Execution progress remains dynamic (`[DONE:n]` + checklist tracking), even if `statusLabel` is set.
+
+#### Example files
+
+- Built-in base config shipped with the package: `apps/pi-extension/plannotator.json`
+- Global user override: `~/.pi/agent/plannotator.json`
+- Project-local override: `<cwd>/.pi/plannotator.json`
+
 ### Code review
 
 Run `/plannotator-review` to open your current git changes in the code review UI. Annotate specific lines, switch between diff views (uncommitted, staged, last commit, branch), and submit feedback that gets sent to the agent.

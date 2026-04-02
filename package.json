@@ -21,6 +21,8 @@
   },
   "files": [
     "index.ts",
+    "plannotator-browser.ts",
+    "plannotator-events.ts",
     "server.ts",
     "tool-scope.ts",
     "config.ts",

@@ -148,6 +148,28 @@ Use these inside `systemPrompt` strings:
 
 Run `/plannotator-review` to open your current git changes in the code review UI. Annotate specific lines, switch between diff views (uncommitted, staged, last commit, branch), and submit feedback that gets sent to the agent.
 
+### Shared Plannotator event API
+
+Plannotator also listens on the shared `plannotator:request` event channel so other extensions can reuse the same browser review flows without importing Plannotator internals.
+
+Supported actions and payloads:
+
+- `plan-review`: `{ planContent, planFilePath? }`
+- `review-status`: `{ reviewId }`
+- `code-review`: `{ cwd?, defaultBranch?, diffType? }`
+- `annotate`: `{ filePath, markdown?, mode?, folderPath? }`
+- `annotate-last`: `{ markdown? }`
+- `archive`: `{ customPlanPath? }`
+
+Plan review is asynchronous:
+
+- callers send `plannotator:request` with action `plan-review`
+- Plannotator opens the browser review and immediately responds with `{ status: "handled", result: { status: "pending", reviewId } }`
+- when the human approves or rejects in the browser, Plannotator emits `plannotator:review-result` with `{ reviewId, approved, feedback, savedPath?, agentSwitch?, permissionMode? }`
+- callers can query `review-status` with the same `reviewId` to recover from startup races or session restarts
+
+The other shared actions remain request/response flows. Payloads are intentionally minimal and only include fields the shared implementation actually uses.
+
 ### Markdown annotation
 
 Run `/plannotator-annotate <file.md>` to open any markdown file in the annotation UI. Useful for reviewing documentation or design specs with the agent.
@@ -155,6 +177,10 @@ Run `/plannotator-annotate <file.md>` to open any markdown file in the annotatio
 ### Annotate last message
 
 Run `/plannotator-last` to annotate the agent's most recent response. The message opens in the annotation UI where you can highlight text, add comments, and send structured feedback back to the agent.
+
+### Archive browser
+
+The Plannotator archive browser is available through the shared event API as `archive`, which opens the saved plan/decision browser for future callers. The orchestrator does not expose a dedicated archive command yet.
 
 ### Progress tracking
 

@@ -95,8 +95,8 @@ const reviewRuntime: ReviewGitRuntime = {
 	},
 };
 
-export function getGitContext(): Promise<GitContext> {
-	return getGitContextCore(reviewRuntime);
+export function getGitContext(cwd?: string): Promise<GitContext> {
+	return getGitContextCore(reviewRuntime, cwd);
 }
 
 export function runGitDiff(

@@ -531,8 +531,9 @@ export async function startReviewServer(options: {
 
 			if (isPRMode && prRef && prMeta) {
 				try {
+					const oldSha = prMeta.mergeBaseSha ?? prMeta.baseSha;
 					const [oldContent, newContent] = await Promise.all([
-						fetchPRFileContent(prRef, prMeta.baseSha, oldPath || filePath),
+						fetchPRFileContent(prRef, oldSha, oldPath || filePath),
 						fetchPRFileContent(prRef, prMeta.headSha, filePath),
 					]);
 					json(res, { oldContent, newContent });

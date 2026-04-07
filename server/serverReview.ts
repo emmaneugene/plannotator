@@ -1,6 +1,7 @@
 import { execSync, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
+import os from "node:os";
 
 import { Readable } from "node:stream";
 
@@ -46,7 +47,7 @@ import {
 } from "./handlers.js";
 import { html, json, parseBody, requestUrl, toWebRequest } from "./helpers.js";
 
-import { listenOnPort } from "./network.js";
+import { isRemoteSession, listenOnPort } from "./network.js";
 import {
 	fetchPRContext,
 	fetchPRFileContent,
@@ -71,10 +72,24 @@ import {
 	transformClaudeFindings,
 } from "../generated/claude-review.js";
 
+/** Detect if running inside WSL (Windows Subsystem for Linux) */
+function detectWSL(): boolean {
+	if (process.platform !== "linux") return false;
+	if (os.release().toLowerCase().includes("microsoft")) return true;
+	try {
+		if (existsSync("/proc/version")) {
+			const content = readFileSync("/proc/version", "utf-8").toLowerCase();
+			return content.includes("wsl") || content.includes("microsoft");
+		}
+	} catch { /* ignore */ }
+	return false;
+}
+
 export interface ReviewServerResult {
 	port: number;
 	portSource: "env" | "remote-default" | "random";
 	url: string;
+	isRemote: boolean;
 	waitForDecision: () => Promise<{
 		approved: boolean;
 		feedback: string;
@@ -84,7 +99,7 @@ export interface ReviewServerResult {
 	stop: () => void;
 }
 
-const reviewRuntime: ReviewGitRuntime = {
+export const reviewRuntime: ReviewGitRuntime = {
 	async runGit(
 		args: string[],
 		options?: { cwd?: string },
@@ -132,11 +147,20 @@ export async function startReviewServer(options: {
 	sharingEnabled?: boolean;
 	shareBaseUrl?: string;
 	prMetadata?: PRMetadata;
+	/** Working directory for agent processes (e.g., --local worktree). Independent of diff pipeline. */
+	agentCwd?: string;
+	/** Cleanup callback invoked when server stops (e.g., remove temp worktree) */
+	onCleanup?: () => void | Promise<void>;
+	/** Called when server starts with the URL, remote status, and port */
+	onReady?: (url: string, isRemote: boolean, port: number) => void;
 }): Promise<ReviewServerResult> {
 	const gitUser = detectGitUser();
 	const draftKey = contentHash(options.rawPatch);
 	const prMeta = options.prMetadata;
 	const isPRMode = !!prMeta;
+	const hasLocalAccess = !!options.gitContext;
+	const isRemote = isRemoteSession();
+	const wslFlag = detectWSL();
 	const prRef = prMeta ? prRefFromMetadata(prMeta) : null;
 	const platformUser = prRef ? await getPRUser(prRef) : null;
 
@@ -170,6 +194,7 @@ export async function startReviewServer(options: {
 	let serverUrl = "";
 	// Worktree-aware cwd resolver — shared by getCwd, buildCommand, and onJobComplete
 	function resolveAgentCwd(): string {
+		if (options.agentCwd) return options.agentCwd;
 		if (currentDiffType.startsWith("worktree:")) {
 			const parsed = parseWorktreeDiffType(currentDiffType);
 			if (parsed) return parsed.path;
@@ -183,11 +208,11 @@ export async function startReviewServer(options: {
 
 		async buildCommand(provider) {
 			const cwd = resolveAgentCwd();
-			const hasLocalAccess = !!options.gitContext;
+			const hasAgentLocalAccess = !!options.agentCwd || !!options.gitContext;
 			const userMessage = buildCodexReviewUserMessage(
 				currentPatch,
 				currentDiffType,
-				{ defaultBranch: options.gitContext?.defaultBranch, hasLocalAccess },
+				{ defaultBranch: options.gitContext?.defaultBranch, hasLocalAccess: hasAgentLocalAccess },
 				options.prMetadata,
 			);
 
@@ -214,8 +239,11 @@ export async function startReviewServer(options: {
 				const output = await parseCodexOutput(meta.outputPath);
 				if (!output) return;
 
+				// Override verdict if there are blocking findings (P0/P1) — Codex's
+				// freeform correctness string can say "mostly correct" with real bugs.
+				const hasBlockingFindings = output.findings.some((f: any) => f.priority !== null && f.priority <= 1);
 				job.summary = {
-					correctness: output.overall_correctness,
+					correctness: hasBlockingFindings ? "Issues Found" : output.overall_correctness,
 					explanation: output.overall_explanation,
 					confidence: output.overall_confidence_score,
 				};
@@ -369,13 +397,7 @@ export async function startReviewServer(options: {
 			aiEndpoints = ai.createAIEndpoints({
 				registry,
 				sessionManager,
-				getCwd: () => {
-					if (currentDiffType.startsWith("worktree:")) {
-						const parsed = parseWorktreeDiffType(currentDiffType);
-						if (parsed) return parsed.path;
-					}
-					return options.gitContext?.cwd ?? process.cwd();
-				},
+				getCwd: resolveAgentCwd,
 			});
 			aiSessionManager = sessionManager;
 			aiRegistry = registry;
@@ -392,19 +414,21 @@ export async function startReviewServer(options: {
 				rawPatch: currentPatch,
 				gitRef: currentGitRef,
 				origin: options.origin ?? "pi",
-				diffType: isPRMode ? undefined : currentDiffType,
-				gitContext: isPRMode ? undefined : options.gitContext,
+				diffType: hasLocalAccess ? currentDiffType : undefined,
+				gitContext: hasLocalAccess ? options.gitContext : undefined,
 				sharingEnabled,
 				shareBaseUrl,
 				repoInfo,
+				isWSL: wslFlag,
+				...(options.agentCwd && { agentCwd: options.agentCwd }),
 				...(isPRMode && { prMetadata: prMeta, platformUser }),
 				...(isPRMode && initialViewedFiles.length > 0 && { viewedFiles: initialViewedFiles }),
-				...(currentError ? { error: currentError } : {}),
+				...(currentError && { error: currentError }),
 				serverConfig: getServerConfig(gitUser),
 			});
 		} else if (url.pathname === "/api/diff/switch" && req.method === "POST") {
-			if (isPRMode) {
-				json(res, { error: "Not available for PR reviews" }, 400);
+			if (!hasLocalAccess) {
+				json(res, { error: "Not available without local file access" }, 400);
 				return;
 			}
 			try {
@@ -456,23 +480,21 @@ export async function startReviewServer(options: {
 			}
 			try {
 				const body = await parseBody(req);
+				const fileComments = (body.fileComments as PRReviewFileComment[]) || [];
+				console.error(`[pr-action] ${body.action} with ${fileComments.length} file comment(s), headSha=${prMeta.headSha}`);
 				await submitPRReview(
 					prRef,
 					prMeta.headSha,
 					body.action as "approve" | "comment",
 					body.body as string,
-					(body.fileComments as PRReviewFileComment[]) || [],
+					fileComments,
 				);
+				console.error(`[pr-action] Success`);
 				json(res, { ok: true, prUrl: prMeta.url });
 			} catch (err) {
-				json(
-					res,
-					{
-						error:
-							err instanceof Error ? err.message : "Failed to submit PR review",
-					},
-					500,
-				);
+				const message = err instanceof Error ? err.message : "Failed to submit PR review";
+				console.error(`[pr-action] Failed: ${message}`);
+				json(res, { error: message }, 500);
 			}
 		} else if (url.pathname === "/api/pr-viewed" && req.method === "POST") {
 			if (!isPRMode || !prMeta || !prRef) {
@@ -498,14 +520,9 @@ export async function startReviewServer(options: {
 				);
 				json(res, { ok: true });
 			} catch (err) {
-				json(
-					res,
-					{
-						error:
-							err instanceof Error ? err.message : "Failed to update viewed state",
-					},
-					500,
-				);
+				const message = err instanceof Error ? err.message : "Failed to update viewed state";
+				console.error("[plannotator] /api/pr-viewed error:", message);
+				json(res, { error: message }, 500);
 			}
 		} else if (url.pathname === "/api/file-content" && req.method === "GET") {
 			const filePath = url.searchParams.get("path");
@@ -529,6 +546,23 @@ export async function startReviewServer(options: {
 				}
 			}
 
+			// Local mode first (matches Bun server priority)
+			if (hasLocalAccess && !isPRMode) {
+				const defaultBranch = options.gitContext?.defaultBranch || "main";
+				const defaultCwd = options.gitContext?.cwd;
+				const result = await getFileContentsForDiffCore(
+					reviewRuntime,
+					currentDiffType,
+					defaultBranch,
+					filePath,
+					oldPath,
+					defaultCwd,
+				);
+				json(res, result);
+				return;
+			}
+
+			// PR mode: fetch from platform API using merge-base/head SHAs
 			if (isPRMode && prRef && prMeta) {
 				try {
 					const oldSha = prMeta.mergeBaseSha ?? prMeta.baseSha;
@@ -552,17 +586,7 @@ export async function startReviewServer(options: {
 				return;
 			}
 
-			const defaultBranch = options.gitContext?.defaultBranch || "main";
-			const defaultCwd = options.gitContext?.cwd;
-			const result = await getFileContentsForDiffCore(
-				reviewRuntime,
-				currentDiffType,
-				defaultBranch,
-				filePath,
-				oldPath,
-				defaultCwd,
-			);
-			json(res, result);
+			json(res, { error: "No file access available" }, 400);
 		} else if (url.pathname === "/api/config" && req.method === "POST") {
 			try {
 				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown> };
@@ -581,8 +605,14 @@ export async function startReviewServer(options: {
 		} else if (url.pathname === "/api/agents" && req.method === "GET") {
 			json(res, { agents: [] });
 		} else if (url.pathname === "/api/git-add" && req.method === "POST") {
-			if (isPRMode) {
-				json(res, { error: "Not available for PR reviews" }, 400);
+			// Staging only available for local diff types that support it (not PR mode, not branch diffs).
+			// Worktree diff types use composite format "worktree:/path:uncommitted" — extract the base type.
+			const baseDiffType = currentDiffType.startsWith("worktree:")
+				? (parseWorktreeDiffType(currentDiffType)?.subType ?? currentDiffType)
+				: currentDiffType;
+			const canStage = baseDiffType === "uncommitted" || baseDiffType === "unstaged";
+			if (isPRMode || !canStage) {
+				json(res, { error: "Staging not available" }, 400);
 				return;
 			}
 			try {
@@ -608,7 +638,7 @@ export async function startReviewServer(options: {
 				json(res, { ok: true });
 			} catch (err) {
 				const message =
-					err instanceof Error ? err.message : "Failed to git add";
+					err instanceof Error ? err.message : "Failed to stage file";
 				json(res, { error: message }, 500);
 			}
 		} else if (url.pathname === "/api/draft") {
@@ -674,10 +704,15 @@ export async function startReviewServer(options: {
 	const exitHandler = () => agentJobs.killAll();
 	process.once("exit", exitHandler);
 
+	if (options.onReady) {
+		options.onReady(serverUrl, isRemote, port);
+	}
+
 	return {
 		port,
 		portSource,
 		url: serverUrl,
+		isRemote,
 		waitForDecision: () => decisionPromise,
 		stop: () => {
 			process.removeListener("exit", exitHandler);
@@ -685,6 +720,13 @@ export async function startReviewServer(options: {
 			aiSessionManager?.disposeAll();
 			aiRegistry?.disposeAll();
 			server.close();
+			// Invoke cleanup callback (e.g., remove temp worktree)
+			if (options.onCleanup) {
+				try {
+					const result = options.onCleanup();
+					if (result instanceof Promise) result.catch(() => {});
+				} catch { /* best effort */ }
+			}
 		},
 	};
 }

@@ -85,6 +85,7 @@ export interface PlannotatorCodeReviewPayload {
 	diffType?: DiffType;
 	defaultBranch?: string;
 	cwd?: string;
+	prUrl?: string;
 }
 
 export interface PlannotatorCodeReviewResult {
@@ -254,6 +255,7 @@ export function registerPlannotatorEventListeners(pi: ExtensionAPI): void {
 						cwd: request.payload?.cwd,
 						defaultBranch: request.payload?.defaultBranch,
 						diffType: request.payload?.diffType,
+						prUrl: request.payload?.prUrl,
 					});
 					request.respond({ status: "handled", result });
 					return;

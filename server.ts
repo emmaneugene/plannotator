@@ -21,6 +21,7 @@ export {
 } from "./server/serverPlan.js";
 export {
 	getGitContext,
+	reviewRuntime,
 	type ReviewServerResult,
 	runGitDiff,
 	startReviewServer,

@@ -65,8 +65,12 @@ export async function startAnnotateServer(options: {
 		resolveDecision = r;
 	});
 
-	// Draft key for annotation persistence
-	const draftKey = contentHash(options.markdown);
+	// Folder annotation has no stable markdown body, so key drafts by folder path instead.
+	const draftSource =
+		options.mode === "annotate-folder" && options.folderPath
+			? `folder:${resolvePath(options.folderPath)}`
+			: options.markdown;
+	const draftKey = contentHash(draftSource);
 
 	// Detect repo info (cached for this session)
 	const repoInfo = getRepoInfo();

@@ -181,6 +181,7 @@ export async function openCodeReview(
 	let prMetadata: Awaited<ReturnType<typeof fetchPR>>["metadata"] | undefined;
 	let diffType: DiffType | undefined;
 	let agentCwd: string | undefined;
+	let initialBase: string | undefined;
 	let worktreeCleanup: (() => void | Promise<void>) | undefined;
 	let exitHandler: (() => void) | undefined;
 
@@ -342,6 +343,10 @@ export async function openCodeReview(
 		rawPatch = result.patch;
 		gitRef = result.label;
 		diffError = result.error;
+		// Remember which base the initial diff was computed against so it can
+		// be forwarded to the server below. Only matters when the caller
+		// overrode the detected default; otherwise it matches gitCtx already.
+		initialBase = defaultBranch;
 	}
 
 	const server = await startReviewServer({
@@ -351,6 +356,7 @@ export async function openCodeReview(
 		origin: "pi",
 		diffType,
 		gitContext: gitCtx,
+		initialBase,
 		prMetadata,
 		agentCwd,
 		htmlContent: reviewHtmlContent,

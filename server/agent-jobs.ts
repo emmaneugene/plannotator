@@ -73,6 +73,8 @@ export interface AgentJobHandlerOptions {
 		reasoningEffort?: string;
 		/** Whether Codex fast mode was enabled. */
 		fastMode?: boolean;
+		/** Diff context snapshot at launch (stored on AgentJobInfo for per-job "Copy All"). */
+		diffContext?: AgentJobInfo["diffContext"];
 	} | null>;
 	/** Called when a job completes successfully — parse results and push annotations. */
 	onJobComplete?: (job: AgentJobInfo, meta: { outputPath?: string; stdout?: string; cwd?: string }) => void | Promise<void>;
@@ -118,7 +120,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 		command: string[],
 		label: string,
 		outputPath?: string,
-		spawnOptions?: { captureStdout?: boolean; stdinPrompt?: string; cwd?: string; prompt?: string; engine?: string; model?: string; effort?: string; reasoningEffort?: string; fastMode?: boolean },
+		spawnOptions?: { captureStdout?: boolean; stdinPrompt?: string; cwd?: string; prompt?: string; engine?: string; model?: string; effort?: string; reasoningEffort?: string; fastMode?: boolean; diffContext?: AgentJobInfo["diffContext"] },
 	): AgentJobInfo {
 		const id = crypto.randomUUID();
 		const source = jobSource(id);
@@ -137,6 +139,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 			...(spawnOptions?.effort && { effort: spawnOptions.effort }),
 			...(spawnOptions?.reasoningEffort && { reasoningEffort: spawnOptions.reasoningEffort }),
 			...(spawnOptions?.fastMode && { fastMode: spawnOptions.fastMode }),
+			...(spawnOptions?.diffContext && { diffContext: spawnOptions.diffContext }),
 		};
 
 		let proc: ChildProcess | null = null;
@@ -419,6 +422,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 					let jobEffort: string | undefined;
 					let jobReasoningEffort: string | undefined;
 					let jobFastMode: boolean | undefined;
+					let jobDiffContext: AgentJobInfo["diffContext"] | undefined;
 					if (options.buildCommand) {
 						// Thread config from POST body to buildCommand
 						const config: Record<string, unknown> = {};
@@ -441,6 +445,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 							jobEffort = built.effort;
 							jobReasoningEffort = built.reasoningEffort;
 							jobFastMode = built.fastMode;
+							jobDiffContext = built.diffContext;
 						}
 					}
 
@@ -459,6 +464,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 						effort: jobEffort,
 						reasoningEffort: jobReasoningEffort,
 						fastMode: jobFastMode,
+						diffContext: jobDiffContext,
 					});
 					json(res, { job }, 201);
 				} catch {

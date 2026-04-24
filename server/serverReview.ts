@@ -1,4 +1,4 @@
-import { execSync, spawnSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
 import os from "node:os";
@@ -105,20 +105,40 @@ export interface ReviewServerResult {
 }
 
 export const reviewRuntime: ReviewGitRuntime = {
-	async runGit(
+	runGit(
 		args: string[],
 		options?: { cwd?: string; timeoutMs?: number },
 	): Promise<GitCommandResult> {
-		const result = spawnSync("git", args, {
-			cwd: options?.cwd,
-			encoding: "utf-8",
-			...(options?.timeoutMs ? { timeout: options.timeoutMs } : {}),
+		return new Promise((resolve) => {
+			const proc = spawn("git", args, {
+				cwd: options?.cwd,
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			if (options?.timeoutMs) {
+				timer = setTimeout(() => proc.kill(), options.timeoutMs);
+			}
+
+			const stdoutChunks: Buffer[] = [];
+			const stderrChunks: Buffer[] = [];
+			proc.stdout!.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
+			proc.stderr!.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+
+			proc.on("close", (code) => {
+				if (timer) clearTimeout(timer);
+				resolve({
+					stdout: Buffer.concat(stdoutChunks).toString("utf-8"),
+					stderr: Buffer.concat(stderrChunks).toString("utf-8"),
+					exitCode: code ?? 1,
+				});
+			});
+
+			proc.on("error", () => {
+				if (timer) clearTimeout(timer);
+				resolve({ stdout: "", stderr: "git not found", exitCode: 1 });
+			});
 		});
-		return {
-			stdout: result.stdout ?? "",
-			stderr: result.stderr ?? "",
-			exitCode: result.status ?? (result.error ? 1 : 0),
-		};
 	},
 
 	async readTextFile(path: string): Promise<string | null> {

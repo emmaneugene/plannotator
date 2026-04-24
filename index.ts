@@ -37,6 +37,8 @@ import { FILE_BROWSER_EXCLUDED } from "./generated/reference-common.js";
 import { htmlToMarkdown } from "./generated/html-to-markdown.js";
 import { urlToMarkdown } from "./generated/url-to-markdown.js";
 import { loadConfig, resolveUseJina } from "./generated/config.js";
+import { parseAnnotateArgs } from "./generated/annotate-args.js";
+import { resolveAtReference } from "./generated/at-reference.js";
 import {
 	getLastAssistantMessageText,
 	hasPlanBrowserHtml,
@@ -337,9 +339,13 @@ export default function plannotator(pi: ExtensionAPI): void {
 	pi.registerCommand("plannotator-annotate", {
 		description: "Open markdown file or folder in annotation UI",
 		handler: async (args, ctx) => {
-			const filePath = args?.trim();
+			// #570: split --gate / --json from the path. --json is silently
+			// accepted (Pi writes back via sendUserMessage, not stdout).
+			// `rawFilePath` keeps any leading `@` for the literal-@ fallback
+			// (scoped-package-style names).
+			const { filePath, rawFilePath, gate } = parseAnnotateArgs(args ?? "");
 			if (!filePath) {
-				ctx.ui.notify("Usage: /plannotator-annotate <file.md | file.html | https://... | folder/>", "error");
+				ctx.ui.notify("Usage: /plannotator-annotate <file.md | file.html | https://... | folder/> [--gate] [--json]", "error");
 				return;
 			}
 			if (!hasPlanBrowserHtml()) {
@@ -373,11 +379,20 @@ export default function plannotator(pi: ExtensionAPI): void {
 				absolutePath = filePath;
 				sourceInfo = filePath;
 			} else {
-				absolutePath = resolveUserPath(filePath, ctx.cwd);
-				if (!existsSync(absolutePath)) {
+				// Pick the interpretation of the user input that actually exists:
+				// stripped form first (reference-mode primary), literal as fallback
+				// for scoped-package-style names. Falls back to the stripped form
+				// for the error message if neither exists.
+				const resolvedCandidate = resolveAtReference(rawFilePath, (c) => {
+					const abs = resolveUserPath(c, ctx.cwd);
+					return existsSync(abs);
+				});
+				if (resolvedCandidate === null) {
+					absolutePath = resolveUserPath(filePath, ctx.cwd);
 					ctx.ui.notify(`File not found: ${absolutePath}`, "error");
 					return;
 				}
+				absolutePath = resolveUserPath(resolvedCandidate, ctx.cwd);
 
 				try {
 					isFolder = statSync(absolutePath).isDirectory();
@@ -413,8 +428,10 @@ export default function plannotator(pi: ExtensionAPI): void {
 			}
 
 			try {
-				const result = await openMarkdownAnnotation(ctx, absolutePath, markdown, mode ?? "annotate", folderPath, sourceInfo);
-				if (result.exit) {
+				const result = await openMarkdownAnnotation(ctx, absolutePath, markdown, mode ?? "annotate", folderPath, sourceInfo, gate);
+				if (result.approved) {
+					ctx.ui.notify("Annotation approved.", "info");
+				} else if (result.exit) {
 					ctx.ui.notify("Annotation session closed.", "info");
 				} else if (result.feedback) {
 					const header = isFolder
@@ -437,7 +454,10 @@ export default function plannotator(pi: ExtensionAPI): void {
 
 	pi.registerCommand("plannotator-last", {
 		description: "Annotate the last assistant message",
-		handler: async (_args, ctx) => {
+		handler: async (args, ctx) => {
+			// #570: support --gate on /plannotator-last for Stop-hook review gate.
+			const { gate } = parseAnnotateArgs(args ?? "");
+
 			if (!hasPlanBrowserHtml()) {
 				ctx.ui.notify(
 					"Annotation UI not available. Run 'bun run build' in the pi-extension directory.",
@@ -455,8 +475,10 @@ export default function plannotator(pi: ExtensionAPI): void {
 			ctx.ui.notify("Opening annotation UI for last message...", "info");
 
 			try {
-				const result = await openLastMessageAnnotation(ctx, lastText);
-				if (result.exit) {
+				const result = await openLastMessageAnnotation(ctx, lastText, gate);
+				if (result.approved) {
+					ctx.ui.notify("Message approved.", "info");
+				} else if (result.exit) {
 					ctx.ui.notify("Annotation session closed.", "info");
 				} else if (result.feedback) {
 					pi.sendUserMessage(

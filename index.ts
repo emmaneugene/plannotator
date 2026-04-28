@@ -37,6 +37,7 @@ import { FILE_BROWSER_EXCLUDED } from "./generated/reference-common.js";
 import { htmlToMarkdown } from "./generated/html-to-markdown.js";
 import { urlToMarkdown, isConvertedSource } from "./generated/url-to-markdown.js";
 import { loadConfig, resolveUseJina } from "./generated/config.js";
+import { getReviewApprovedPrompt } from "./generated/prompts.js";
 import { parseAnnotateArgs } from "./generated/annotate-args.js";
 import { resolveAtReference } from "./generated/at-reference.js";
 import {
@@ -313,7 +314,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 				} else if (result.feedback) {
 					if (result.approved) {
 						pi.sendUserMessage(
-							`# Code Review\n\nCode review completed — no changes requested.`,
+							getReviewApprovedPrompt("pi", loadConfig()),
 						);
 					} else if (isPRReview) {
 						// Platform PR actions (approve/comment) return approved:false with a

@@ -35,7 +35,7 @@ import { planDenyFeedback } from "./generated/feedback-templates.js";
 import { hasMarkdownFiles, resolveUserPath } from "./generated/resolve-file.js";
 import { FILE_BROWSER_EXCLUDED } from "./generated/reference-common.js";
 import { htmlToMarkdown } from "./generated/html-to-markdown.js";
-import { urlToMarkdown } from "./generated/url-to-markdown.js";
+import { urlToMarkdown, isConvertedSource } from "./generated/url-to-markdown.js";
 import { loadConfig, resolveUseJina } from "./generated/config.js";
 import { parseAnnotateArgs } from "./generated/annotate-args.js";
 import { resolveAtReference } from "./generated/at-reference.js";
@@ -361,6 +361,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 			let folderPath: string | undefined;
 			let mode: "annotate" | "annotate-folder" | undefined;
 			let sourceInfo: string | undefined;
+			let sourceConverted = false;
 			let isFolder = false;
 
 			// --- URL annotation ---
@@ -372,6 +373,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 				try {
 					const result = await urlToMarkdown(filePath, { useJina });
 					markdown = result.markdown;
+					sourceConverted = isConvertedSource(result.source);
 				} catch (err) {
 					ctx.ui.notify(`Failed to fetch URL: ${err instanceof Error ? err.message : String(err)}`, "error");
 					return;
@@ -420,6 +422,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 					const html = readFileSync(absolutePath, "utf-8");
 					markdown = htmlToMarkdown(html);
 					sourceInfo = basename(absolutePath);
+					sourceConverted = true;
 					ctx.ui.notify(`Opening annotation UI for ${filePath}...`, "info");
 				} else {
 					markdown = readFileSync(absolutePath, "utf-8");
@@ -428,7 +431,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 			}
 
 			try {
-				const result = await openMarkdownAnnotation(ctx, absolutePath, markdown, mode ?? "annotate", folderPath, sourceInfo, gate);
+				const result = await openMarkdownAnnotation(ctx, absolutePath, markdown, mode ?? "annotate", folderPath, sourceInfo, sourceConverted, gate);
 				if (result.approved) {
 					ctx.ui.notify("Annotation approved.", "info");
 				} else if (result.exit) {

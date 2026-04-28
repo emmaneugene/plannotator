@@ -391,6 +391,7 @@ export async function openMarkdownAnnotation(
 	mode: AnnotateMode,
 	folderPath?: string,
 	sourceInfo?: string,
+	sourceConverted?: boolean,
 	gate?: boolean,
 ): Promise<{ feedback: string; exit?: boolean; approved?: boolean }> {
 	if (!ctx.hasUI || !planHtmlContent) {
@@ -416,6 +417,7 @@ export async function openMarkdownAnnotation(
 		mode,
 		folderPath,
 		sourceInfo,
+		sourceConverted,
 		gate,
 		htmlContent: planHtmlContent,
 		sharingEnabled: process.env.PLANNOTATOR_SHARE !== "disabled",
@@ -431,7 +433,7 @@ export async function openLastMessageAnnotation(
 	lastText: string,
 	gate?: boolean,
 ): Promise<{ feedback: string; exit?: boolean; approved?: boolean }> {
-	return openMarkdownAnnotation(ctx, "last-message", lastText, "annotate-last", undefined, undefined, gate);
+	return openMarkdownAnnotation(ctx, "last-message", lastText, "annotate-last", undefined, undefined, undefined, gate);
 }
 
 export async function openArchiveBrowserAction(

@@ -77,8 +77,9 @@ export function handleDocRequest(res: Res, url: URL): void {
 		try {
 			if (existsSync(fromBase)) {
 				const raw = readFileSync(fromBase, "utf-8");
-				const markdown = /\.html?$/i.test(requestedPath) ? htmlToMarkdown(raw) : raw;
-				json(res, { markdown, filepath: fromBase });
+				const isHtml = /\.html?$/i.test(requestedPath);
+				const markdown = isHtml ? htmlToMarkdown(raw) : raw;
+				json(res, { markdown, filepath: fromBase, isConverted: isHtml });
 				return;
 			}
 		} catch {
@@ -97,7 +98,7 @@ export function handleDocRequest(res: Res, url: URL): void {
 		try {
 			if (existsSync(resolvedHtml)) {
 				const html = readFileSync(resolvedHtml, "utf-8");
-				json(res, { markdown: htmlToMarkdown(html), filepath: resolvedHtml });
+				json(res, { markdown: htmlToMarkdown(html), filepath: resolvedHtml, isConverted: true });
 				return;
 			}
 		} catch { /* fall through to 404 */ }

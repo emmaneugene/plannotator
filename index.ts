@@ -31,13 +31,23 @@ import {
 	markCompletedSteps,
 	parseChecklist,
 } from "./generated/checklist.js";
-import { planDenyFeedback } from "./generated/feedback-templates.js";
 import { hasMarkdownFiles, resolveUserPath } from "./generated/resolve-file.js";
 import { FILE_BROWSER_EXCLUDED } from "./generated/reference-common.js";
 import { htmlToMarkdown } from "./generated/html-to-markdown.js";
 import { urlToMarkdown, isConvertedSource } from "./generated/url-to-markdown.js";
 import { loadConfig, resolveUseJina } from "./generated/config.js";
-import { getReviewApprovedPrompt } from "./generated/prompts.js";
+import {
+	getReviewApprovedPrompt,
+	getReviewDeniedSuffix,
+	getPlanDeniedPrompt,
+	getPlanApprovedPrompt,
+	getPlanApprovedWithNotesPrompt,
+	getPlanAutoApprovedPrompt,
+	getPlanToolName,
+	buildPlanFileRule,
+	getAnnotateFileFeedbackPrompt,
+	getAnnotateMessageFeedbackPrompt,
+} from "./generated/prompts.js";
 import { parseAnnotateArgs } from "./generated/annotate-args.js";
 import { resolveAtReference } from "./generated/at-reference.js";
 import {
@@ -322,7 +332,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 						pi.sendUserMessage(result.feedback);
 					} else {
 						pi.sendUserMessage(
-							`${result.feedback}\n\nPlease address this feedback.`,
+							`${result.feedback}${getReviewDeniedSuffix("pi", loadConfig())}`,
 						);
 					}
 				} else {
@@ -438,12 +448,11 @@ export default function plannotator(pi: ExtensionAPI): void {
 				} else if (result.exit) {
 					ctx.ui.notify("Annotation session closed.", "info");
 				} else if (result.feedback) {
-					const header = isFolder
-						? `# Markdown Annotations\n\nFolder: ${absolutePath}\n\n`
-						: `# Markdown Annotations\n\nFile: ${absolutePath}\n\n`;
-					pi.sendUserMessage(
-						`${header}${result.feedback}\n\nPlease address the annotation feedback above.`,
-					);
+					pi.sendUserMessage(getAnnotateFileFeedbackPrompt("pi", loadConfig(), {
+						fileHeader: isFolder ? "Folder" : "File",
+						filePath: absolutePath,
+						feedback: result.feedback,
+					}));
 				} else {
 					ctx.ui.notify("Annotation closed (no feedback).", "info");
 				}
@@ -485,9 +494,9 @@ export default function plannotator(pi: ExtensionAPI): void {
 				} else if (result.exit) {
 					ctx.ui.notify("Annotation session closed.", "info");
 				} else if (result.feedback) {
-					pi.sendUserMessage(
-						`# Message Annotations\n\n${result.feedback}\n\nPlease address the annotation feedback above.`,
-					);
+					pi.sendUserMessage(getAnnotateMessageFeedbackPrompt("pi", loadConfig(), {
+						feedback: result.feedback,
+					}));
 				} else {
 					ctx.ui.notify("Annotation closed (no feedback).", "info");
 				}
@@ -655,7 +664,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text",
-							text: "Plan auto-approved (non-interactive mode). Execute the plan now.",
+							text: getPlanAutoApprovedPrompt("pi", loadConfig()),
 						},
 					],
 					details: { approved: true },
@@ -690,7 +699,11 @@ export default function plannotator(pi: ExtensionAPI): void {
 						content: [
 							{
 								type: "text",
-								text: `Plan approved with notes! You now have full tool access (read, bash, edit, write). Execute the plan in ${inputPath}. ${doneMsg}\n\n## Implementation Notes\n\nThe user approved your plan but added the following notes to consider during implementation:\n\n${result.feedback}\n\nProceed with implementation, incorporating these notes where applicable.`,
+								text: getPlanApprovedWithNotesPrompt("pi", loadConfig(), {
+									planFilePath: inputPath,
+									doneMsg,
+									feedback: result.feedback,
+								}),
 							},
 						],
 						details: { approved: true, feedback: result.feedback },
@@ -701,7 +714,10 @@ export default function plannotator(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text",
-							text: `Plan approved. You now have full tool access (read, bash, edit, write). Execute the plan in ${inputPath}. ${doneMsg}`,
+							text: getPlanApprovedPrompt("pi", loadConfig(), {
+								planFilePath: inputPath,
+								doneMsg,
+							}),
 						},
 					],
 					details: { approved: true },
@@ -715,8 +731,10 @@ export default function plannotator(pi: ExtensionAPI): void {
 				content: [
 					{
 						type: "text",
-						text: planDenyFeedback(feedbackText, PLAN_SUBMIT_TOOL, {
-							planFilePath: inputPath,
+						text: getPlanDeniedPrompt("pi", loadConfig(), {
+							toolName: getPlanToolName("pi"),
+							planFileRule: buildPlanFileRule(getPlanToolName("pi"), inputPath),
+							feedback: feedbackText,
 						}),
 					},
 				],

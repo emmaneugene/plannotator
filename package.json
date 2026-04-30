@@ -39,6 +39,7 @@
     "prepublishOnly": "cd ../.. && bun run build:pi"
   },
   "dependencies": {
+    "@pierre/diffs": "^1.1.12",
     "turndown": "^7.2.4",
     "@joplin/turndown-plugin-gfm": "^1.0.64"
   },

@@ -24,11 +24,13 @@ import {
 import { detectObsidianVaults } from "../generated/integrations-common.js";
 import {
 	isAbsoluteUserPath,
+	isCodeFilePath,
 	resolveMarkdownFile,
 	resolveUserPath,
 	isWithinProjectRoot,
 } from "../generated/resolve-file.js";
 import { htmlToMarkdown } from "../generated/html-to-markdown.js";
+import { preloadFile } from "@pierre/diffs/ssr";
 
 type Res = ServerResponse;
 
@@ -54,7 +56,7 @@ function walkMarkdownFiles(dir: string, root: string, results: string[], extensi
 }
 
 /** Serve a linked markdown document. Uses shared resolveMarkdownFile for parity with Bun server. */
-export function handleDocRequest(res: Res, url: URL): void {
+export async function handleDocRequest(res: Res, url: URL): Promise<void> {
 	const requestedPath = url.searchParams.get("path");
 	if (!requestedPath) {
 		json(res, { error: "Missing path parameter" }, 400);
@@ -102,6 +104,40 @@ export function handleDocRequest(res: Res, url: URL): void {
 				return;
 			}
 		} catch { /* fall through to 404 */ }
+		json(res, { error: `File not found: ${requestedPath}` }, 404);
+		return;
+	}
+
+	// Code files: resolve directly, return raw contents (no markdown conversion)
+	if (isCodeFilePath(requestedPath)) {
+		const resolvedCode = resolveUserPath(requestedPath, resolvedBase || projectRoot);
+		if (!resolvedBase && !isWithinProjectRoot(resolvedCode, projectRoot)) {
+			json(res, { error: "Access denied: path is outside project root" }, 403);
+			return;
+		}
+		try {
+			if (existsSync(resolvedCode)) {
+				const stat = statSync(resolvedCode);
+				if (stat.size > 2 * 1024 * 1024) {
+					json(res, { error: "File too large (max 2MB)" }, 413);
+					return;
+				}
+				const contents = readFileSync(resolvedCode, "utf-8");
+				const displayName = resolvedCode.split("/").pop() || resolvedCode;
+				let prerenderedHTML: string | undefined;
+				try {
+					const result = await preloadFile({
+						file: { name: displayName, contents },
+						options: { disableFileHeader: true },
+					});
+					prerenderedHTML = result.prerenderedHTML;
+				} catch {
+					// Fall back to client-side rendering
+				}
+				json(res, { codeFile: true, contents, filepath: resolvedCode, prerenderedHTML });
+				return;
+			}
+		} catch { /* fall through */ }
 		json(res, { error: `File not found: ${requestedPath}` }, 404);
 		return;
 	}

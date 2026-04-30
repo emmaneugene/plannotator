@@ -246,7 +246,7 @@ export async function startPlanReviewServer(options: {
 		} else if (externalAnnotations && (await externalAnnotations.handle(req, res, url))) {
 			return;
 		} else if (url.pathname === "/api/doc" && req.method === "GET") {
-			handleDocRequest(res, url);
+			await handleDocRequest(res, url);
 		} else if (url.pathname === "/api/obsidian/vaults") {
 			handleObsidianVaultsRequest(res);
 		} else if (url.pathname === "/api/reference/obsidian/files" && req.method === "GET") {

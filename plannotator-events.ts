@@ -10,6 +10,9 @@ import {
 	openCodeReview,
 	openLastMessageAnnotation,
 	openMarkdownAnnotation,
+	startCodeReviewBrowserSession,
+	startLastMessageAnnotationSession,
+	startMarkdownAnnotationSession,
 	startPlanReviewBrowserSession,
 } from "./plannotator-browser.js";
 
@@ -288,7 +291,7 @@ export function registerPlannotatorEventListeners(pi: ExtensionAPI): void {
 				}
 				case "annotate-last": {
 					const payload = request.payload;
-					const lastText = payload?.markdown?.trim() ? payload.markdown : await getLastAssistantMessageText(ctx);
+					const lastText = payload?.markdown?.trim() ? payload.markdown : getLastAssistantMessageText(ctx);
 					if (!lastText) {
 						request.respond({ status: "unavailable", error: "No assistant message found in session." });
 						return;
@@ -318,6 +321,9 @@ export {
 	getLastAssistantMessageText,
 	hasPlanBrowserHtml,
 	hasReviewBrowserHtml,
+	startCodeReviewBrowserSession,
+	startLastMessageAnnotationSession,
+	startMarkdownAnnotationSession,
 	getStartupErrorMessage,
 	openArchiveBrowserAction,
 	openCodeReview,

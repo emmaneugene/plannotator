@@ -1,8 +1,8 @@
 {
   "name": "@plannotator/pi-extension",
-  "version": "0.19.7",
+  "version": "0.19.8",
   "type": "module",
-  "description": "Plannotator extension for Pi coding agent - interactive plan review with visual annotation",
+  "description": "Plannotator Pi extension - interactive plan review with annotations, annotate agent messages, and review code/PRs",
   "author": "backnotprop",
   "license": "MIT OR Apache-2.0",
   "repository": {

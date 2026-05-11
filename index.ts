@@ -493,7 +493,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 			// accepted (Pi writes back via sendUserMessage, not stdout).
 			// `rawFilePath` keeps any leading `@` for the literal-@ fallback
 			// (scoped-package-style names).
-			const { filePath, rawFilePath, gate } = parseAnnotateArgs(args ?? "");
+			const { filePath, rawFilePath, gate, renderHtml: renderHtmlFlag } = parseAnnotateArgs(args ?? "");
 			if (!filePath) {
 				ctx.ui.notify("Usage: /plannotator-annotate <file.md | file.html | https://... | folder/> [--gate] [--json]", "error");
 				return;
@@ -507,6 +507,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 			}
 
 			let markdown: string;
+			let rawHtml: string | undefined;
 			let absolutePath: string;
 			let folderPath: string | undefined;
 			let mode: "annotate" | "annotate-folder" | undefined;
@@ -570,9 +571,14 @@ export default function plannotator(pi: ExtensionAPI): void {
 						return;
 					}
 					const html = readFileSync(absolutePath, "utf-8");
-					markdown = htmlToMarkdown(html);
+					if (renderHtmlFlag) {
+						rawHtml = html;
+						markdown = "";
+					} else {
+						markdown = htmlToMarkdown(html);
+						sourceConverted = true;
+					}
 					sourceInfo = basename(absolutePath);
-					sourceConverted = true;
 					ctx.ui.notify(`Opening annotation UI for ${filePath}...`, "info");
 				} else {
 					markdown = readFileSync(absolutePath, "utf-8");
@@ -593,6 +599,8 @@ export default function plannotator(pi: ExtensionAPI): void {
 					sourceInfo,
 					sourceConverted,
 					gate,
+					rawHtml,
+					renderHtmlFlag,
 				);
 				ctx.ui.notify("Annotation opened. You can keep chatting while it runs.", "info");
 				void session

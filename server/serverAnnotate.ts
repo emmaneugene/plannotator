@@ -47,6 +47,8 @@ export async function startAnnotateServer(options: {
 	sourceInfo?: string;
 	sourceConverted?: boolean;
 	gate?: boolean;
+	rawHtml?: string;
+	renderHtml?: boolean;
 }): Promise<AnnotateServerResult> {
 	// Side-channel pre-warm so /api/doc/exists POSTs land on warm cache.
 	void warmFileListCache(process.cwd(), "code");
@@ -77,7 +79,7 @@ export async function startAnnotateServer(options: {
 	const draftSource =
 		options.mode === "annotate-folder" && options.folderPath
 			? `folder:${resolvePath(options.folderPath)}`
-			: options.markdown;
+			: options.renderHtml && options.rawHtml ? options.rawHtml : options.markdown;
 	const draftKey = contentHash(draftSource);
 
 	// Detect repo info (cached for this session)
@@ -99,6 +101,8 @@ export async function startAnnotateServer(options: {
 				sourceInfo: options.sourceInfo,
 				sourceConverted: options.sourceConverted ?? false,
 				gate: options.gate ?? false,
+				renderAs: options.renderHtml && options.rawHtml ? 'html' : 'markdown',
+				...(options.renderHtml && options.rawHtml ? { rawHtml: options.rawHtml } : {}),
 				sharingEnabled,
 				shareBaseUrl,
 				pasteApiUrl,

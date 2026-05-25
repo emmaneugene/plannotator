@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 
+import { resolveCommandFromWhichOutput } from "../generated/ai/providers/command-path.js";
 import { json, toWebRequest } from "./helpers.js";
 
 export interface PiAIRuntime {
@@ -21,10 +22,7 @@ function whichCmd(cmd: string): string | null {
 			encoding: "utf-8",
 			stdio: ["pipe", "pipe", "pipe"],
 		});
-		return output
-			.split(/\r?\n/)
-			.map((line) => line.trim())
-			.find(Boolean) ?? null;
+		return resolveCommandFromWhichOutput(output);
 	} catch {
 		return null;
 	}

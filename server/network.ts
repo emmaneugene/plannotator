@@ -8,6 +8,7 @@ import { existsSync } from "node:fs";
 import type { Server } from "node:http";
 import { release } from "node:os";
 import { delimiter, join } from "node:path";
+import { loadConfig, resolveUseGlimpse } from "../generated/config.js";
 
 const DEFAULT_REMOTE_PORT = 19432;
 const LOOPBACK_HOST = "127.0.0.1";
@@ -220,7 +221,7 @@ export async function openBrowser(url: string): Promise<{
 		return { opened: false, isRemote: true, url };
 	}
 
-	if (!browser) {
+	if (!browser && resolveUseGlimpse(loadConfig())) {
 		const openedViaGlimpse = await openGlimpse(url);
 		if (openedViaGlimpse) {
 			return { opened: true };

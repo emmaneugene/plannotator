@@ -65,8 +65,10 @@ import {
 	registerPlannotatorEventListeners,
 } from "./plannotator-events.js";
 import {
+	findAssistantMessageByEntryId,
 	getAssistantMessageText,
 	getLastAssistantMessageSnapshot,
+	getRecentAssistantMessages,
 	hasSessionMovedPastEntry,
 } from "./assistant-message.js";
 import {
@@ -489,7 +491,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 	pi.registerCommand("plannotator-annotate", {
 		description: "Open markdown file or folder in annotation UI",
 		handler: async (args, ctx) => {
-			// #570: split --gate / --json from the path. --json is silently
+			// Split --gate / --json from the path. --json is silently
 			// accepted (Pi writes back via sendUserMessage, not stdout).
 			// `rawFilePath` keeps any leading `@` for the literal-@ fallback
 			// (scoped-package-style names).
@@ -649,7 +651,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 	pi.registerCommand("plannotator-last", {
 		description: "Annotate the last assistant message",
 		handler: async (args, ctx) => {
-			// #570: support --gate on /plannotator-last for Stop-hook review gate.
+			// Support --gate on /plannotator-last for the Stop-hook review gate.
 			const { gate } = parseAnnotateArgs(args ?? "");
 
 			if (!hasPlanBrowserHtml()) {
@@ -669,10 +671,13 @@ export default function plannotator(pi: ExtensionAPI): void {
 				return;
 			}
 
+			const recent = getRecentAssistantMessages(ctx, 25);
+			const pickerMessages = recent.length > 1 ? recent : undefined;
+
 			ctx.ui.notify("Opening annotation UI for last message...", "info");
 
 			try {
-				const session = await startLastMessageAnnotationSession(ctx, snapshot.text, gate);
+				const session = await startLastMessageAnnotationSession(ctx, snapshot.text, gate, pickerMessages);
 				ctx.ui.notify("Last-message annotation opened. You can keep chatting while it runs.", "info");
 				void session
 					.waitForDecision()
@@ -690,9 +695,14 @@ export default function plannotator(pi: ExtensionAPI): void {
 								safeNotify(ctx, "Annotation closed (no feedback).", "info", origin);
 								return;
 							}
-							const feedback = shouldAnchorLastMessageFeedback(ctx, snapshot.entryId, origin)
-								? anchorMessageFeedback(result.feedback, snapshot.text)
-								: result.feedback;
+							// Picker may have changed which message the feedback targets; if so,
+							// look that one up in the current branch so the anchor quote matches.
+							const target = result.selectedMessageId && result.selectedMessageId !== snapshot.entryId
+								? findAssistantMessageByEntryId(ctx, result.selectedMessageId) ?? snapshot
+								: snapshot;
+								const feedback = result.feedbackScope !== "messages" && shouldAnchorLastMessageFeedback(ctx, target.entryId, origin)
+									? anchorMessageFeedback(result.feedback, target.text)
+									: result.feedback;
 							sendUserMessageWithCurrentSessionFallback(
 								pi,
 								getAnnotateMessageFeedbackPrompt("pi", loadConfig(), {

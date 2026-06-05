@@ -491,13 +491,13 @@ export default function plannotator(pi: ExtensionAPI): void {
 	pi.registerCommand("plannotator-annotate", {
 		description: "Open markdown file or folder in annotation UI",
 		handler: async (args, ctx) => {
-			// Split --gate / --json from the path. --json is silently
+			// Split known annotate flags from the path. --json is silently
 			// accepted (Pi writes back via sendUserMessage, not stdout).
 			// `rawFilePath` keeps any leading `@` for the literal-@ fallback
 			// (scoped-package-style names).
-			const { filePath, rawFilePath, gate, renderHtml: renderHtmlFlag } = parseAnnotateArgs(args ?? "");
+			const { filePath, rawFilePath, gate, renderHtml: renderHtmlFlag, noJina } = parseAnnotateArgs(args ?? "");
 			if (!filePath) {
-				ctx.ui.notify("Usage: /plannotator-annotate <file.md | file.html | https://... | folder/> [--gate] [--json]", "error");
+				ctx.ui.notify("Usage: /plannotator-annotate <file.md | file.html | https://... | folder/> [--no-jina] [--gate] [--json]", "error");
 				return;
 			}
 			if (!hasPlanBrowserHtml()) {
@@ -521,7 +521,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 			const isUrl = /^https?:\/\//i.test(filePath);
 
 			if (isUrl) {
-				const useJina = resolveUseJina(false, loadConfig());
+				const useJina = resolveUseJina(noJina, loadConfig());
 				ctx.ui.notify(`Fetching: ${filePath}${useJina ? " (via Jina Reader)" : " (via fetch+Turndown)"}...`, "info");
 				try {
 					const result = await urlToMarkdown(filePath, { useJina });

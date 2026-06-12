@@ -38,6 +38,7 @@ import {
 	resolveStackInfo,
 	resolvePRFullStackBaseRef,
 	runPRFullStackDiff,
+	runPRLayerLocalDiff,
 	type PRDiffScope,
 } from "../generated/pr-stack.js";
 
@@ -198,6 +199,12 @@ export async function startReviewServer(options: {
 	shareBaseUrl?: string;
 	pasteApiUrl?: string;
 	prMetadata?: PRMetadata;
+	/**
+	 * The initial layer patch is missing per-file content (platform APIs
+	 * withhold patches on very large PRs). Enables the local recompute upgrade
+	 * once a pool checkout is ready.
+	 */
+	prPatchIncomplete?: boolean;
 	/** Working directory for agent processes (e.g., --local worktree). Independent of diff pipeline. */
 	agentCwd?: string;
 	/** Local parent directory containing multiple child VCS repositories. */
@@ -228,8 +235,24 @@ export async function startReviewServer(options: {
 
 	let prListCache: import("../generated/pr-types.js").PRListItem[] | null = null;
 	let prListCacheTime = 0;
-	const prSwitchCache = new Map<string, { metadata: PRMetadata; rawPatch: string }>();
-	if (isPRMode && prMeta) prSwitchCache.set(prMeta.url, { metadata: prMeta, rawPatch: options.rawPatch });
+	// Platform APIs withhold per-file patches on very large PRs. When the layer
+	// patch is incomplete, a local recompute (exact merge-base diff, no size
+	// limits) becomes available once a pool checkout exists — the layer
+	// fingerprint flips to drive the refresh notice, and the pr-diff-scope
+	// "layer" branch performs the upgrade. Tracked per-PR across pr-switch.
+	// Partiality is INFORMATION (the platform withheld content) and is always
+	// reported; whether a local recompute can be OFFERED is a separate
+	// capability, gated on the pool below (layerUpgradeAvailable).
+	let layerPatchIncomplete = (options.prPatchIncomplete ?? false) && isPRMode;
+	const layerUpgradeAvailable = !!options.worktreePool;
+	const prSwitchCache = new Map<string, { metadata: PRMetadata; rawPatch: string; patchIncomplete?: boolean }>();
+	if (isPRMode && prMeta) {
+		prSwitchCache.set(prMeta.url, {
+			metadata: prMeta,
+			rawPatch: options.rawPatch,
+			patchIncomplete: layerPatchIncomplete,
+		});
+	}
 	const prStackTreeCache = new Map<string, import("../generated/pr-types.js").PRStackTree | null>();
 
 	// Fetch full stack tree (best-effort — always try in PR mode so root PRs
@@ -281,6 +304,10 @@ export async function startReviewServer(options: {
 	let originalPRGitRef = options.gitRef;
 	let originalPRError = options.error;
 	let currentPRDiffScope: PRDiffScope = "layer";
+	// Monotonic guard for PR scope/switch state writes. Scope requests now park
+	// on long awaits (checkout warmup, full recompute) — a request that resumed
+	// after a NEWER scope select or pr-switch must not overwrite their state.
+	let prScopeEpoch = 0;
 	// Tracks the base branch the user picked from the UI. Agent review prompts
 	// read this (not gitContext.defaultBranch) so they analyze the same diff
 	// the reviewer is currently looking at. Honors an explicit initialBase from
@@ -301,8 +328,13 @@ export async function startReviewServer(options: {
 			if (workspace) return await workspace.getFingerprint();
 			if (isPRMode) {
 				if (currentPRDiffScope === "layer") {
-					// Platform-computed diff — immutable locally; recaptured on pr-switch.
-					return `pr-layer:${prMeta?.url ?? ""}`;
+					// Platform-computed diff — immutable locally. The :incomplete
+					// suffix keeps the baseline honest across the local-recompute
+					// upgrade (the upgrade recaptures without it); the upgrade notice
+					// itself is client-driven via prPatchIncomplete, not this probe.
+					// Recaptured on pr-switch.
+					const suffix = layerPatchIncomplete ? ":incomplete" : "";
+					return `pr-layer:${prMeta?.url ?? ""}${suffix}`;
 				}
 				// Full-stack: three-dot diff against the local checkout — fingerprint
 				// (merge-base, HEAD), which changes exactly when the patch can.
@@ -419,6 +451,10 @@ export async function startReviewServer(options: {
 		);
 		if (result.status === "ok") {
 			semanticDiffCache.set(cacheKey, currentPatch, result);
+		} else if (result.status === "error") {
+			// Cooldown-memoized: request rate (file badges remount on scroll) must
+			// not drive sem execution rate when it's failing.
+			semanticDiffCache.setFailure(cacheKey, currentPatch, result);
 		}
 		return result;
 	}
@@ -429,6 +465,14 @@ export async function startReviewServer(options: {
 		getCwd: resolveAgentCwd,
 
 		async buildCommand(provider, config) {
+			// Fail fast in PR-pool mode when this PR's checkout doesn't exist
+			// (e.g. a pr-switch whose worktree creation failed): falling back
+			// would run the agent against the wrong revision or directory.
+			if (options.worktreePool && prMeta && !options.worktreePool.resolve(prMeta.url)) {
+				throw new Error(
+					"Local PR checkout unavailable — the agent can't run against the PR files. Retry shortly (the checkout may still be recovering).",
+				);
+			}
 			const cwd = resolveAgentCwd();
 			const workspacePrompt = getWorkspacePromptContext();
 			const hasAgentLocalAccess = !!workspacePrompt || !!options.worktreePool || !!options.agentCwd || !!options.gitContext;
@@ -662,6 +706,7 @@ export async function startReviewServer(options: {
 					prDiffScope: currentPRDiffScope,
 					prDiffScopeOptions,
 				}),
+				...(isPRMode && layerPatchIncomplete && { prPatchIncomplete: true, prPatchUpgradeAvailable: layerUpgradeAvailable }),
 				...(isPRMode && initialViewedFiles.length > 0 && { viewedFiles: initialViewedFiles }),
 				...(currentError && { error: currentError }),
 				semanticDiff: await getSemanticDiffAdvert(),
@@ -788,17 +833,77 @@ export async function startReviewServer(options: {
 					return;
 				}
 
+				const scopeEpoch = ++prScopeEpoch;
+				// A newer scope select or pr-switch landed while this request was
+				// parked on an await: drop this request's writes and return the
+				// newest state so the client converges on it.
+				const respondSuperseded = async () => {
+					const semanticDiff = await getSemanticDiffAdvert();
+					json(res, {
+						rawPatch: currentPatch,
+						gitRef: currentGitRef,
+						prDiffScope: currentPRDiffScope,
+						...(layerPatchIncomplete ? { prPatchIncomplete: true, prPatchUpgradeAvailable: layerUpgradeAvailable } : {}),
+						...(currentError ? { error: currentError } : {}),
+						semanticDiff,
+					});
+				};
+
 				if (body.scope === "layer") {
+					// Upgrade path: the platform withheld per-file content for this
+					// PR (too large). Once a pool checkout exists, recompute the
+					// exact layer diff locally and replace the truncated API
+					// reconstruction. Snapshot the PR before the await — a pr-switch
+					// landing mid-recompute must not have its patch overwritten with
+					// the previous PR's diff.
+					const upgradeMeta = prMeta;
+					let upgradeError: string | undefined;
+					if (layerPatchIncomplete && options.worktreePool && upgradeMeta) {
+						let upgradeCwd: string | undefined;
+						try {
+							upgradeCwd = (await options.worktreePool.ensure(reviewRuntime, upgradeMeta)).path;
+						} catch {
+							// Pool can't make a worktree (e.g. cross-repo pool after a
+							// pr-switch). The initial clone is still the right repo —
+							// pr-switch enforces same-project — and the recompute diffs
+							// explicit SHAs (fetching missing ones), so fall back to it.
+							upgradeCwd = options.agentCwd && existsSync(options.agentCwd) ? options.agentCwd : undefined;
+						}
+						if (upgradeCwd && prMeta === upgradeMeta) {
+							const result = await runPRLayerLocalDiff(reviewRuntime, upgradeMeta, upgradeCwd);
+							if (prMeta === upgradeMeta) {
+								if (!result.error) {
+									originalPRPatch = result.patch;
+									originalPRError = undefined;
+									layerPatchIncomplete = false;
+									prSwitchCache.set(upgradeMeta.url, {
+										metadata: upgradeMeta,
+										rawPatch: result.patch,
+										patchIncomplete: false,
+									});
+								} else {
+									upgradeError = `Could not recompute the full diff locally: ${result.error}`;
+									console.error(`Local PR diff recompute failed: ${result.error}`);
+								}
+							}
+						}
+					}
+					if (scopeEpoch !== prScopeEpoch) return respondSuperseded();
 					currentPatch = originalPRPatch;
 					currentGitRef = originalPRGitRef;
 					currentError = originalPRError;
 					currentPRDiffScope = "layer";
+					// The upgrade changed the patch this session serves; drafts must
+					// key off it so a pr-switch round-trip (which rehashes from the
+					// cache) resolves to the same key.
+					if (!layerPatchIncomplete) draftKey = contentHash(currentPatch);
 					captureDiffFingerprint();
 					json(res, {
 						rawPatch: currentPatch,
 						gitRef: currentGitRef,
 						prDiffScope: currentPRDiffScope,
-						...(currentError ? { error: currentError } : {}),
+						...(layerPatchIncomplete ? { prPatchIncomplete: true, prPatchUpgradeAvailable: layerUpgradeAvailable } : {}),
+						...((currentError ?? upgradeError) ? { error: currentError ?? upgradeError } : {}),
 						semanticDiff: await getSemanticDiffAdvert(),
 					});
 					return;
@@ -818,6 +923,7 @@ export async function startReviewServer(options: {
 					return;
 				}
 
+				if (scopeEpoch !== prScopeEpoch) return respondSuperseded();
 				currentPatch = result.patch;
 				currentGitRef = result.label;
 				currentError = undefined;
@@ -847,6 +953,9 @@ export async function startReviewServer(options: {
 				const cached = prSwitchCache.get(body.url);
 				const pr = cached ?? await fetchPR(newRef);
 				if (!cached) prSwitchCache.set(body.url, pr);
+				// Bump the scope epoch so a scope request parked on a long await
+				// cannot overwrite this switch.
+				prScopeEpoch++;
 				prMeta = pr.metadata;
 				prRef = prRefFromMetadata(pr.metadata);
 				currentPatch = pr.rawPatch;
@@ -856,6 +965,7 @@ export async function startReviewServer(options: {
 				originalPRGitRef = currentGitRef;
 				originalPRError = undefined;
 				currentPRDiffScope = "layer";
+				layerPatchIncomplete = pr.patchIncomplete ?? false;
 				draftKey = contentHash(pr.rawPatch);
 				prListCache = null;
 				captureDiffFingerprint();
@@ -907,6 +1017,7 @@ export async function startReviewServer(options: {
 					prStackTree,
 					prDiffScope: currentPRDiffScope,
 					prDiffScopeOptions,
+					...(layerPatchIncomplete ? { prPatchIncomplete: true, prPatchUpgradeAvailable: layerUpgradeAvailable } : {}),
 					repoInfo,
 					...(switchedViewedFiles.length > 0 && { viewedFiles: switchedViewedFiles }),
 					...(currentError ? { error: currentError } : {}),
@@ -1245,8 +1356,24 @@ export async function startReviewServer(options: {
 			return;
 		} else if (await agentJobs.handle(req, res, url)) {
 			return;
-		} else if (url.pathname.startsWith("/api/ai/") && await handlePiAIRequest(req, res, url, aiRuntime)) {
-			return;
+		} else if (url.pathname.startsWith("/api/ai/")) {
+			// AI sessions pin their cwd at creation — make sure the PR checkout
+			// exists first so sessions never root in a transient fallback
+			// (mirrors the Bun server; no-op while the pool entry is ready).
+			if (req.method === "POST" && url.pathname === "/api/ai/session" && options.worktreePool && prMeta) {
+				// If the checkout can't be produced, refuse instead of starting a
+				// session rooted in the wrong directory.
+				try {
+					await options.worktreePool.ensure(reviewRuntime, prMeta);
+				} catch {
+					json(res, { error: "Local PR checkout unavailable — Ask AI can't read the PR files right now. Retry shortly." }, 503);
+					return;
+				}
+			}
+			if (await handlePiAIRequest(req, res, url, aiRuntime)) return;
+			// Unmatched /api/ai/* paths fall through to the app shell, same as
+			// the original dispatch chain.
+			html(res, options.htmlContent);
 		} else if (url.pathname === "/api/exit" && req.method === "POST") {
 			deleteDraft(draftKey);
 			resolveDecision({ approved: false, feedback: '', annotations: [], exit: true });

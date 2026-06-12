@@ -253,6 +253,7 @@ export async function startCodeReviewBrowserSession(
 	let diffError: string | undefined;
 	let gitCtx: Awaited<ReturnType<typeof prepareLocalReviewDiff>>["gitContext"] | undefined;
 	let prMetadata: Awaited<ReturnType<typeof fetchPR>>["metadata"] | undefined;
+	let prPatchIncomplete = false;
 	let diffType: DiffType | WorkspaceDiffType | undefined;
 	let agentCwd: string | undefined;
 	let initialBase: string | undefined;
@@ -291,6 +292,7 @@ export async function startCodeReviewBrowserSession(
 		rawPatch = pr.rawPatch;
 		gitRef = `${getMRLabel(prRef)} ${getMRNumberLabel(prRef)}`;
 		prMetadata = pr.metadata;
+		prPatchIncomplete = pr.patchIncomplete ?? false;
 
 		if (shouldUseLocalPrCheckout(options)) {
 			// Create local worktree for agent file access (--local is the default for PR reviews)
@@ -473,6 +475,7 @@ export async function startCodeReviewBrowserSession(
 		gitContext: gitCtx,
 		initialBase,
 		prMetadata,
+		prPatchIncomplete,
 		workspace,
 		agentCwd,
 		worktreePool,

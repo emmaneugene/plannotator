@@ -479,8 +479,14 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 						diffContext: jobDiffContext,
 					});
 					json(res, { job }, 201);
-				} catch {
-					json(res, { error: "Invalid JSON" }, 400);
+				} catch (err) {
+					// buildCommand can refuse a launch (e.g. PR checkout unavailable) —
+					// surface its message instead of mislabeling it a JSON error.
+					if (err instanceof SyntaxError) {
+						json(res, { error: "Invalid JSON" }, 400);
+					} else {
+						json(res, { error: err instanceof Error ? err.message : "Failed to launch agent" }, 503);
+					}
 				}
 				return true;
 			}

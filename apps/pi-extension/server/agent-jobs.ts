@@ -195,40 +195,45 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 			if (spawnOptions?.cwd) jobOutputPaths.set(`${id}:cwd`, spawnOptions.cwd);
 			broadcast({ type: "job:started", job: { ...info } });
 
-			// --- Stdout capture (Claude JSONL streaming) ---
+			// --- Stdout capture (Claude/Cursor stream-json) ---
 			let stdoutBuf = "";
 			if (captureStdout && proc.stdout) {
+				// Format one complete JSONL line into a live-log delta (skip result
+				// events — handled in onJobComplete).
+				const emitLogLine = (line: string) => {
+					if (!line.trim()) return;
+					// Tour jobs with the Claude engine also stream Claude JSONL.
+					if (provider === "claude" || spawnOptions?.engine === "claude") {
+						const formatted = formatClaudeLogEvent(line);
+						if (formatted !== null) broadcast({ type: "job:log", jobId: id, delta: formatted + '\n' });
+						return;
+					}
+					// Cursor: map stream-json events (init/assistant/tool_call/result)
+					// into readable log deltas, applying the partial-output dedup rule.
+					if (provider === "cursor") {
+						const formatted = formatCursorLogEvent(line);
+						if (formatted !== null) broadcast({ type: "job:log", jobId: id, delta: formatted + '\n' });
+						return;
+					}
+					try {
+						const event = JSON.parse(line);
+						if (event.type === 'result') return;
+					} catch { /* not JSON — forward as raw log */ }
+					broadcast({ type: "job:log", jobId: id, delta: line + '\n' });
+				};
+				// stream-json output is NDJSON and chunk boundaries are arbitrary —
+				// carry the trailing partial line until a later chunk completes it,
+				// otherwise records split across chunks are dropped from live logs.
+				let logLineCarry = "";
 				proc.stdout.on("data", (chunk: Buffer) => {
 					const text = chunk.toString();
 					stdoutBuf += text;
-
-					// Forward JSONL lines as log events
-					const lines = text.split('\n');
-					for (const line of lines) {
-						if (!line.trim()) continue;
-						// Tour jobs with the Claude engine also stream Claude JSONL.
-						if (provider === "claude" || spawnOptions?.engine === "claude") {
-							const formatted = formatClaudeLogEvent(line);
-							if (formatted !== null) {
-								broadcast({ type: "job:log", jobId: id, delta: formatted + '\n' });
-							}
-							continue;
-						}
-						// Cursor: map stream-json events (init/assistant/tool_call/result)
-						// into readable log deltas, applying the partial-output dedup rule.
-						if (provider === "cursor") {
-							const formatted = formatCursorLogEvent(line);
-							if (formatted !== null) {
-								broadcast({ type: "job:log", jobId: id, delta: formatted + '\n' });
-							}
-							continue;
-						}
-						try {
-							const event = JSON.parse(line);
-							if (event.type === 'result') continue;
-						} catch { /* not JSON — forward as raw log */ }
-						broadcast({ type: "job:log", jobId: id, delta: line + '\n' });
-					}
+					const lines = (logLineCarry + text).split('\n');
+					logLineCarry = lines.pop() ?? "";
+					for (const line of lines) emitLogLine(line);
+				});
+				proc.stdout.on("end", () => {
+					if (logLineCarry) emitLogLine(logLineCarry);
 				});
 			}
 

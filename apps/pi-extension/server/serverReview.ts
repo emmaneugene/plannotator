@@ -549,12 +549,12 @@ export async function startReviewServer(options: {
 			if (provider === "cursor") {
 				// Cursor has no schema flag — its marker-block output contract lives in
 				// CURSOR_REVIEW_PROMPT. captureStdout is required (the marker block comes
-				// back on stdout, like Claude). buildCursorCommand puts the prompt on
-				// stdin and threads --workspace=cwd to match the spawn cwd.
+				// back on stdout, like Claude). buildCursorCommand passes the prompt as
+				// the trailing argv arg and threads --workspace=cwd to match the spawn cwd.
 				const model = typeof config?.model === "string" && config.model ? config.model : undefined;
 				const prompt = CURSOR_REVIEW_PROMPT + "\n\n---\n\n" + userMessage;
-				const { command, stdinPrompt } = buildCursorCommand(prompt, model, cwd);
-				return { command, stdinPrompt, prompt, cwd, label: jobLabel, captureStdout: true, model, prUrl: launchPrUrl, diffScope: launchDiffScope, diffContext };
+				const { command } = buildCursorCommand(prompt, model, cwd);
+				return { command, prompt, cwd, label: jobLabel, captureStdout: true, model, prUrl: launchPrUrl, diffScope: launchDiffScope, diffContext };
 			}
 
 			return null;
@@ -639,8 +639,14 @@ export async function startReviewServer(options: {
 					return;
 				}
 
+				// Derive the verdict from finding severities (like Claude) rather than
+				// trusting Cursor's free-form `correctness` string. Cursor has no schema
+				// flag, so a model value like "not correct" would be stored verbatim and
+				// the detail panel (any string containing "correct" except "incorrect" →
+				// green) would invert the displayed result.
+				const hasImportant = output.findings.some((f) => f.severity === "important");
 				job.summary = {
-					correctness: output.summary.correctness,
+					correctness: hasImportant ? "Issues Found" : "Correct",
 					explanation: output.summary.explanation,
 					confidence: output.summary.confidence,
 				};

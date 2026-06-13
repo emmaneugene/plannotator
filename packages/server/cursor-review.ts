@@ -223,18 +223,21 @@ If no issues are found, return an empty "findings" array with a valid summary.`;
 
 export interface CursorCommandResult {
   command: string[];
-  /** Prompt text written to stdin (preferred over argv, like Claude). */
-  stdinPrompt: string;
 }
 
 /**
  * Build the `agent -p` command. NOTE the binary is `agent`, NOT `cursor`.
  *
  * Read-only posture comes entirely from `--mode ask` + `--sandbox enabled` and
- * the absence of `--force`/`--yolo`. The prompt goes on stdin (preferred over
- * argv — avoids quoting issues and argv size limits). `--model` is omitted when
- * the model is `Auto`/empty so Cursor uses its default model selection.
- * `--workspace` is set to the launch cwd when provided, matching the spawn cwd.
+ * the absence of `--force`/`--yolo`. `--trust` is required in headless print
+ * mode: without it Cursor stops on an interactive workspace-trust prompt that a
+ * background job can never answer. It is safe here because the run is already
+ * constrained to read-only ask mode with the sandbox enabled.
+ *
+ * The prompt is the trailing positional argument — `agent` reads task text from
+ * argv (`[prompt...]`), not stdin. `--model` is omitted when the model is
+ * `Auto`/empty so Cursor uses its default model selection. `--workspace` is set
+ * to the launch cwd when provided, matching the spawn cwd.
  */
 export function buildCursorCommand(prompt: string, model?: string, cwd?: string): CursorCommandResult {
   const useModel = !!model && model !== "Auto";
@@ -248,12 +251,14 @@ export function buildCursorCommand(prompt: string, model?: string, cwd?: string)
       "--output-format",
       "stream-json",
       "--stream-partial-output",
+      "--trust",
       ...(cwd ? ["--workspace", cwd] : []),
       "--sandbox",
       "enabled",
       ...(useModel ? ["--model", model] : []),
+      // Prompt is the trailing positional arg — agent reads it from argv, not stdin.
+      prompt,
     ],
-    stdinPrompt: prompt,
   };
 }
 

@@ -63,8 +63,8 @@ function chunkify(s: string, parts: number): string[] {
 // ---------------------------------------------------------------------------
 
 describe("buildCursorCommand", () => {
-  test("uses the `agent` binary and read-only flags, prompt on stdin", () => {
-    const { command, stdinPrompt } = buildCursorCommand("review this", "gpt-5", "/repo");
+  test("uses the `agent` binary and read-only flags, prompt as trailing argv", () => {
+    const { command } = buildCursorCommand("review this", "gpt-5", "/repo");
     expect(command[0]).toBe("agent");
     expect(command).toContain("-p");
     // Read-only posture: --mode ask + --sandbox enabled, NO --force/--yolo.
@@ -74,6 +74,8 @@ describe("buildCursorCommand", () => {
     expect(command[command.indexOf("--sandbox") + 1]).toBe("enabled");
     expect(command).not.toContain("--force");
     expect(command).not.toContain("--yolo");
+    // Headless print mode needs --trust to skip the interactive workspace-trust prompt.
+    expect(command).toContain("--trust");
     // stream-json + partial output for live logs.
     expect(command).toContain("--output-format");
     expect(command[command.indexOf("--output-format") + 1]).toBe("stream-json");
@@ -81,9 +83,8 @@ describe("buildCursorCommand", () => {
     // workspace matches launch cwd; model present.
     expect(command[command.indexOf("--workspace") + 1]).toBe("/repo");
     expect(command[command.indexOf("--model") + 1]).toBe("gpt-5");
-    // Prompt is NOT in argv — it goes on stdin.
-    expect(stdinPrompt).toBe("review this");
-    expect(command).not.toContain("review this");
+    // Prompt is the trailing positional argv arg — agent reads it from argv, not stdin.
+    expect(command[command.length - 1]).toBe("review this");
   });
 
   test("omits --model when model is Auto or empty", () => {

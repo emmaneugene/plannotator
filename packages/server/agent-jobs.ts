@@ -247,41 +247,44 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
       let stdoutBuf = "";
       const stdoutDone = (captureStdout && proc.stdout && typeof proc.stdout !== "number")
         ? (async () => {
+            // Format one complete JSONL line into a live-log delta (skip result
+            // events — those are handled in onJobComplete).
+            const emitLogLine = (line: string) => {
+              if (!line.trim()) return;
+              // Claude: format JSONL into readable text. Tour jobs with the
+              // Claude engine also stream Claude JSONL, so key off engine too.
+              if (provider === "claude" || spawnOptions?.engine === "claude") {
+                const formatted = formatClaudeLogEvent(line);
+                if (formatted !== null) broadcast({ type: "job:log", jobId: id, delta: formatted + '\n' });
+                return;
+              }
+              // Cursor: map stream-json events (init/assistant/tool_call/result)
+              // into readable log deltas, applying the partial-output dedup rule.
+              if (provider === "cursor") {
+                const formatted = formatCursorLogEvent(line);
+                if (formatted !== null) broadcast({ type: "job:log", jobId: id, delta: formatted + '\n' });
+                return;
+              }
+              try {
+                const event = JSON.parse(line);
+                if (event.type === 'result') return;
+              } catch { /* not JSON — forward as raw log */ }
+              broadcast({ type: "job:log", jobId: id, delta: line + '\n' });
+            };
             try {
               const reader = proc!.stdout as unknown as AsyncIterable<Uint8Array>;
+              // stream-json output is NDJSON and chunk boundaries are arbitrary —
+              // carry the trailing partial line until a later chunk completes it,
+              // otherwise records split across chunks are dropped from live logs.
+              let logLineCarry = "";
               for await (const chunk of reader) {
                 const text = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
                 stdoutBuf += text;
-
-                // Forward JSONL lines as log events (skip result events)
-                const lines = text.split('\n');
-                for (const line of lines) {
-                  if (!line.trim()) continue;
-                  // Claude: format JSONL into readable text. Tour jobs with the
-                  // Claude engine also stream Claude JSONL, so key off engine too.
-                  if (provider === "claude" || spawnOptions?.engine === "claude") {
-                    const formatted = formatClaudeLogEvent(line);
-                    if (formatted !== null) {
-                      broadcast({ type: "job:log", jobId: id, delta: formatted + '\n' });
-                    }
-                    continue;
-                  }
-                  // Cursor: map stream-json events (init/assistant/tool_call/result)
-                  // into readable log deltas, applying the partial-output dedup rule.
-                  if (provider === "cursor") {
-                    const formatted = formatCursorLogEvent(line);
-                    if (formatted !== null) {
-                      broadcast({ type: "job:log", jobId: id, delta: formatted + '\n' });
-                    }
-                    continue;
-                  }
-                  try {
-                    const event = JSON.parse(line);
-                    if (event.type === 'result') continue; // handled in onJobComplete
-                  } catch { /* not JSON — forward as raw log */ }
-                  broadcast({ type: "job:log", jobId: id, delta: line + '\n' });
-                }
+                const lines = (logLineCarry + text).split('\n');
+                logLineCarry = lines.pop() ?? "";
+                for (const line of lines) emitLogLine(line);
               }
+              if (logLineCarry) emitLogLine(logLineCarry);
             } catch {
               // Stream closed
             }

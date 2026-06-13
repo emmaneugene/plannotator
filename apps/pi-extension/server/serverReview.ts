@@ -87,6 +87,12 @@ import {
 } from "../generated/claude-review.js";
 import { createTourSession, TOUR_EMPTY_OUTPUT_ERROR } from "../generated/tour-review.js";
 import {
+	CURSOR_REVIEW_PROMPT,
+	buildCursorCommand,
+	parseCursorStreamOutput,
+	transformCursorFindings,
+} from "../generated/cursor-review.js";
+import {
 	WorkspaceReviewSession,
 	type WorkspaceDiffType,
 } from "../generated/review-workspace.js";
@@ -540,6 +546,17 @@ export async function startReviewServer(options: {
 				return { command, stdinPrompt, prompt, cwd, label: jobLabel, captureStdout: true, model, effort, prUrl: launchPrUrl, diffScope: launchDiffScope, diffContext };
 			}
 
+			if (provider === "cursor") {
+				// Cursor has no schema flag — its marker-block output contract lives in
+				// CURSOR_REVIEW_PROMPT. captureStdout is required (the marker block comes
+				// back on stdout, like Claude). buildCursorCommand puts the prompt on
+				// stdin and threads --workspace=cwd to match the spawn cwd.
+				const model = typeof config?.model === "string" && config.model ? config.model : undefined;
+				const prompt = CURSOR_REVIEW_PROMPT + "\n\n---\n\n" + userMessage;
+				const { command, stdinPrompt } = buildCursorCommand(prompt, model, cwd);
+				return { command, stdinPrompt, prompt, cwd, label: jobLabel, captureStdout: true, model, prUrl: launchPrUrl, diffScope: launchDiffScope, diffContext };
+			}
+
 			return null;
 		},
 
@@ -605,6 +622,43 @@ export async function startReviewServer(options: {
 						.map(a => ({ ...a, ...jobPrContext, ...(jobDiffScope && { diffScope: jobDiffScope }) }));
 					const result = externalAnnotations.addAnnotations({ annotations });
 					if ("error" in result) console.error(`[claude-review] addAnnotations error:`, result.error);
+				}
+				return;
+			}
+
+			// --- Cursor path ---
+			// FAIL-CLOSED: Cursor output is prompt-enforced (no schema flag), so any
+			// missing/malformed/schema/transform/insertion failure must MUTATE the job
+			// to failed — NEVER throw (agent-jobs.ts swallows throws, silently leaving
+			// an exit-0 job marked done). Mirrors the Tour fail-closed pattern below.
+			if (job.provider === "cursor") {
+				const output = meta.stdout ? parseCursorStreamOutput(meta.stdout) : null;
+				if (!output) {
+					job.status = "failed";
+					job.error = "Cursor review output missing or unparseable (no valid marker JSON).";
+					return;
+				}
+
+				job.summary = {
+					correctness: output.summary.correctness,
+					explanation: output.summary.explanation,
+					confidence: output.summary.confidence,
+				};
+
+				if (output.findings.length > 0) {
+					const annotations = transformCursorFindings(
+						output.findings,
+						job.source,
+						cwd,
+						workspace ? (filePath) => workspace.normalizeAnnotationPath(filePath) : undefined,
+					)
+						.map(a => ({ ...a, ...jobPrContext, ...(jobDiffScope && { diffScope: jobDiffScope }) }));
+					const result = externalAnnotations.addAnnotations({ annotations });
+					if ("error" in result) {
+						job.status = "failed";
+						job.error = `Cursor annotation insertion failed: ${result.error}`;
+						return;
+					}
 				}
 				return;
 			}

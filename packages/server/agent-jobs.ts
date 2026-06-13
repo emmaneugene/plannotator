@@ -9,6 +9,7 @@
  */
 
 import { formatClaudeLogEvent } from "./claude-review";
+import { formatCursorLogEvent } from "./cursor-review";
 import {
   type AgentJobInfo,
   type AgentJobEvent,
@@ -45,6 +46,15 @@ const BASE = "/api/agents";
 const JOBS = `${BASE}/jobs`;
 const JOBS_STREAM = `${JOBS}/stream`;
 const CAPABILITIES = `${BASE}/capabilities`;
+
+// Providers whose command is owned by the server. Client-supplied argv is never
+// spawned for these — buildCommand must produce the command or the launch fails.
+const SERVER_BUILT_PROVIDERS: ReadonlySet<string> = new Set([
+  "claude",
+  "codex",
+  "tour",
+  "cursor",
+]);
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -110,6 +120,8 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
     { id: "claude", name: "Claude Code", available: !!Bun.which("claude") },
     { id: "codex", name: "Codex CLI", available: !!Bun.which("codex") },
     { id: "tour", name: "Code Tour", available: !!Bun.which("claude") || !!Bun.which("codex") },
+    // Cursor CLI's binary is literally named `agent` (NOT `cursor`).
+    { id: "cursor", name: "Cursor CLI", available: !!Bun.which("agent") },
   ];
   const capabilitiesResponse: AgentCapabilities = {
     mode,
@@ -249,6 +261,15 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
                   // Claude engine also stream Claude JSONL, so key off engine too.
                   if (provider === "claude" || spawnOptions?.engine === "claude") {
                     const formatted = formatClaudeLogEvent(line);
+                    if (formatted !== null) {
+                      broadcast({ type: "job:log", jobId: id, delta: formatted + '\n' });
+                    }
+                    continue;
+                  }
+                  // Cursor: map stream-json events (init/assistant/tool_call/result)
+                  // into readable log deltas, applying the partial-output dedup rule.
+                  if (provider === "cursor") {
+                    const formatted = formatCursorLogEvent(line);
                     if (formatted !== null) {
                       broadcast({ type: "job:log", jobId: id, delta: formatted + '\n' });
                     }
@@ -442,6 +463,22 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
               { error: `Unknown or unavailable provider: ${provider}` },
               { status: 400 },
             );
+          }
+
+          // Fail-closed enforcement for server-owned providers: the command MUST
+          // be built server-side. Client-supplied argv is never spawned for these
+          // providers — a null/throwing builder becomes an error, not a fallback.
+          const isServerBuiltProvider = SERVER_BUILT_PROVIDERS.has(provider);
+          if (isServerBuiltProvider) {
+            if (!options.buildCommand) {
+              return Response.json(
+                { error: `Provider ${provider} requires server-built command` },
+                { status: 400 },
+              );
+            }
+            // Discard any client-supplied argv so a null build cleanly hits the
+            // `command.length === 0` guard below instead of falling through.
+            command = [];
           }
 
           // Try server-side command building for known providers

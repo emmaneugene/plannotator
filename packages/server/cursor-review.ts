@@ -335,9 +335,15 @@ export function reduceCursorStreamEvents(stdout: string): CursorStreamReduction 
     recordCount++;
 
     if (event.type === "assistant") {
-      // For partial streaming, only append real new deltas. If no event in the
-      // stream carries timestamp_ms (partial streaming disabled), append the
-      // full assistant text once.
+      // Append real new deltas (timestamp_ms present, model_call_id absent).
+      // The no-timestamp branch below intentionally KEEPS the end-of-turn flush
+      // — it covers both partial-streaming-disabled output (the full message
+      // arrives once) and the enabled-mode final flush, and keeping it is a
+      // parse-robustness safety net: it guarantees the marker block is present
+      // even if the deltas didn't fully carry it (extractLastMarkerBlock takes
+      // the LAST block, so the duplicate is harmless). This is deliberately MORE
+      // lenient than formatCursorLogEvent, which drops the flush so live logs
+      // don't repeat the whole assistant output. Do not "unify" the two.
       if (event.timestamp_ms !== undefined) {
         if (isRealAssistantDelta(event)) canonicalText += extractAssistantText(event);
       } else if (event.model_call_id === undefined) {

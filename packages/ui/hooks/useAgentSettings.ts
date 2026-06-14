@@ -13,7 +13,9 @@ export const DEFAULT_TOUR_CLAUDE_EFFORT = 'medium';
 export const DEFAULT_TOUR_CODEX_MODEL = 'gpt-5.3-codex';
 export const DEFAULT_TOUR_CODEX_REASONING = 'medium';
 export const DEFAULT_TOUR_CODEX_FAST = false;
-export const DEFAULT_CURSOR_MODEL = 'Auto';
+// `auto` is Cursor's own default model id (from `agent models`); lowercase so it
+// matches the discovered catalog and the buildCursorCommand omit-`--model` check.
+export const DEFAULT_CURSOR_MODEL = 'auto';
 
 interface ClaudeSection {
   model: string;

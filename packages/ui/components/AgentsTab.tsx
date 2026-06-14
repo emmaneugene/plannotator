@@ -68,10 +68,13 @@ const TOUR_CLAUDE_MODELS: Array<{ value: string; label: string }> = [
   { value: 'opus', label: 'Opus (thorough)' },
 ];
 
-// Cursor v1 minimal catalog — just Auto. Model discovery waits on a
-// provider-metadata contract (see approach doc § Model Discovery).
+// Fallback Cursor model catalog (just `auto`). The real, account-specific list
+// is discovered server-side via `agent models` and delivered on the cursor
+// capability; the component prefers that and only falls back to this when the
+// server reports no models (e.g. unauthenticated CLI). Used by formatModel for
+// job-card labels where the live list isn't threaded.
 const CURSOR_MODELS: Array<{ value: string; label: string }> = [
-  { value: 'Auto', label: 'Auto' },
+  { value: 'auto', label: 'Auto' },
 ];
 
 const MODE_LABEL: Record<AgentMode, string> = {
@@ -418,6 +421,15 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
   const tourAvailable = capabilities?.providers.some((p) => p.id === 'tour' && p.available) ?? false;
   const cursorAvailable = capabilities?.providers.some((p) => p.id === 'cursor' && p.available) ?? false;
 
+  // Cursor's model catalog is account-specific and discovered server-side, so
+  // prefer the live list from the capability; fall back to `auto`-only when the
+  // server reports none (e.g. unauthenticated CLI).
+  const cursorModels = useMemo<Array<{ value: string; label: string }>>(() => {
+    const discovered = capabilities?.providers.find((p) => p.id === 'cursor')?.models ?? [];
+    const opts = discovered.map((m) => ({ value: m.id, label: m.label }));
+    return opts.length > 0 ? opts : CURSOR_MODELS;
+  }, [capabilities]);
+
   // Tour engines (narrow union). Cursor is NOT included here — it is review-only.
   const availableEngines = useMemo<AgentEngine[]>(() => {
     const engines: AgentEngine[] = [];
@@ -504,12 +516,12 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
       return { provider: 'claude', label: 'Code Review', model: claudeModel, effort: claudeEffort };
     }
     if (engine === 'cursor') {
-      // Omission ⇒ Auto: drop model client-side when Auto so the POST carries
-      // no model and the server applies Cursor's default behavior.
+      // Omission ⇒ auto: drop the model client-side when it's `auto` so the POST
+      // carries no model and the server lets Cursor pick its default.
       return {
         provider: 'cursor',
         label: 'Code Review',
-        ...(cursorModel && cursorModel !== 'Auto' ? { model: cursorModel } : {}),
+        ...(cursorModel && cursorModel.toLowerCase() !== 'auto' ? { model: cursorModel } : {}),
       };
     }
     return {
@@ -630,10 +642,10 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
                       <span className="text-muted-foreground/50">Findings are prompt-enforced</span>
                     </div>
                     <ConfigRow label="Model" stacked>
-                      {CURSOR_MODELS.length > 1 ? (
-                        <SelectMenu value={cursorModel} options={CURSOR_MODELS} onChange={setCursorModel} />
+                      {cursorModels.length > 1 ? (
+                        <SelectMenu value={cursorModel} options={cursorModels} onChange={setCursorModel} />
                       ) : (
-                        renderStaticChoice(catalogLabel(CURSOR_MODELS, cursorModel))
+                        renderStaticChoice(catalogLabel(cursorModels, cursorModel))
                       )}
                     </ConfigRow>
                   </>

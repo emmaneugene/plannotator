@@ -9,7 +9,7 @@
  */
 
 import { formatClaudeLogEvent } from "./claude-review";
-import { formatCursorLogEvent } from "./cursor-review";
+import { formatCursorLogEvent, parseCursorModelsOutput, type CursorModel } from "./cursor-review";
 import {
   type AgentJobInfo,
   type AgentJobEvent,
@@ -131,6 +131,25 @@ function isCursorAgentAvailable(): boolean {
   }
 }
 
+/**
+ * Best-effort Cursor model catalog from `agent models`, parsed once and cached.
+ * Empty when discovery fails or the CLI is unauthenticated — the UI falls back
+ * to an `auto`-only picker. Account-specific, so never hardcoded.
+ */
+function discoverCursorModels(): CursorModel[] {
+  try {
+    const res = Bun.spawnSync(["agent", "models"], {
+      stdout: "pipe",
+      stderr: "ignore",
+      timeout: 5000,
+    });
+    if (!res.success) return [];
+    return parseCursorModelsOutput(new TextDecoder().decode(res.stdout));
+  } catch {
+    return [];
+  }
+}
+
 export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJobHandler {
   const { mode, getServerUrl, getCwd } = options;
 
@@ -142,13 +161,20 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
   let version = 0;
 
   // --- Capability detection (run once) ---
+  // Cursor CLI's binary is literally named `agent` (NOT `cursor`), so verify
+  // identity rather than trusting the name alone. When present, also discover
+  // its account-specific model catalog so the UI doesn't hardcode model ids.
+  const cursorAvailable = mode === "review" && isCursorAgentAvailable();
   const capabilities: AgentCapability[] = [
     { id: "claude", name: "Claude Code", available: !!Bun.which("claude") },
     { id: "codex", name: "Codex CLI", available: !!Bun.which("codex") },
     { id: "tour", name: "Code Tour", available: !!Bun.which("claude") || !!Bun.which("codex") },
-    // Cursor CLI's binary is literally named `agent` (NOT `cursor`), so verify
-    // identity rather than trusting the name alone (see isCursorAgentAvailable).
-    { id: "cursor", name: "Cursor CLI", available: isCursorAgentAvailable() },
+    {
+      id: "cursor",
+      name: "Cursor CLI",
+      available: cursorAvailable,
+      ...(cursorAvailable ? { models: discoverCursorModels() } : {}),
+    },
   ];
   const capabilitiesResponse: AgentCapabilities = {
     mode,

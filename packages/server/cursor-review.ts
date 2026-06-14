@@ -253,7 +253,8 @@ export interface CursorCommandResult {
  * to the launch cwd when provided, matching the spawn cwd.
  */
 export function buildCursorCommand(prompt: string, model?: string, cwd?: string): CursorCommandResult {
-  const useModel = !!model && model !== "Auto";
+  // `auto` is Cursor's default model id — omit --model so the CLI chooses.
+  const useModel = !!model && model.toLowerCase() !== "auto";
 
   return {
     command: [
@@ -273,6 +274,41 @@ export function buildCursorCommand(prompt: string, model?: string, cwd?: string)
       prompt,
     ],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Model discovery — parse `agent models` output. The spawn is runtime-specific
+// (it lives in each server's agent-jobs adapter); this pure parser is shared.
+// ---------------------------------------------------------------------------
+
+export interface CursorModel {
+  id: string;
+  label: string;
+}
+
+/**
+ * Parse the text output of `agent models` / `agent --list-models` into a model
+ * catalog. The CLI prints one model per line as `<id> - <Label>`, wrapped by an
+ * "Available models" header and a "Tip: ..." footer. Returns [] when the output
+ * carries no model lines (e.g. unauthenticated: "No models available...").
+ */
+export function parseCursorModelsOutput(stdout: string): CursorModel[] {
+  if (!stdout) return [];
+  const models: CursorModel[] = [];
+  const seen = new Set<string>();
+  for (const rawLine of stdout.split("\n")) {
+    const line = rawLine.trim();
+    // `id - Label` — id is a single whitespace-free token; the separator is
+    // " - " with surrounding spaces (model ids contain hyphens but never " - ").
+    const match = /^(\S+)\s+-\s+(.+)$/.exec(line);
+    if (!match) continue;
+    const id = match[1];
+    const label = match[2].trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    models.push({ id, label });
+  }
+  return models;
 }
 
 // ---------------------------------------------------------------------------

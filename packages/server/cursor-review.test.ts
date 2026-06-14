@@ -8,6 +8,7 @@ import {
   formatCursorLogEvent,
   transformCursorFindings,
   validateCursorReviewOutput,
+  parseCursorModelsOutput,
   type CursorFinding,
   type CursorReviewOutput,
 } from "./cursor-review";
@@ -313,5 +314,41 @@ describe("transformCursorFindings", () => {
   test("defaults lineEnd to lineStart when end_line is absent", () => {
     const f = [{ file: "/repo/a.ts", line: 7, severity: "nit", description: "d", reasoning: "" } as unknown as CursorFinding];
     expect(transformCursorFindings(f, "src", "/repo")[0].lineEnd).toBe(7);
+  });
+});
+
+describe("parseCursorModelsOutput", () => {
+  test("parses `id - Label` lines and skips the header + tip", () => {
+    const out = [
+      "Available models",
+      "",
+      "auto - Auto",
+      "gpt-5.2 - GPT-5.2",
+      "claude-opus-4-8-thinking-high - Opus 4.8 1M Thinking",
+      "composer-2.5 - Composer 2.5 (current)",
+      "",
+      "Tip: use --model <id> (or /model <id> in interactive mode) to switch.",
+    ].join("\n");
+    const models = parseCursorModelsOutput(out);
+    expect(models).toEqual([
+      { id: "auto", label: "Auto" },
+      { id: "gpt-5.2", label: "GPT-5.2" },
+      { id: "claude-opus-4-8-thinking-high", label: "Opus 4.8 1M Thinking" },
+      { id: "composer-2.5", label: "Composer 2.5 (current)" },
+    ]);
+  });
+
+  test("returns [] for unauthenticated / empty output", () => {
+    expect(parseCursorModelsOutput("No models available for this account.")).toEqual([]);
+    expect(parseCursorModelsOutput("")).toEqual([]);
+    expect(parseCursorModelsOutput("Not logged in")).toEqual([]);
+  });
+
+  test("dedupes repeated ids, keeping first", () => {
+    const models = parseCursorModelsOutput("auto - Auto\nauto - Auto Again\ngpt-5.2 - GPT-5.2");
+    expect(models).toEqual([
+      { id: "auto", label: "Auto" },
+      { id: "gpt-5.2", label: "GPT-5.2" },
+    ]);
   });
 });

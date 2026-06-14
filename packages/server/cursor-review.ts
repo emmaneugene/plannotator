@@ -440,9 +440,12 @@ export function formatCursorLogEvent(line: string): string | null {
       return null;
     }
     case "assistant": {
-      // Apply partial-output dedup: only show real new deltas. If the event
-      // carries no timestamp_ms at all (non-partial flush), show it once.
-      if (event.timestamp_ms !== undefined && !isRealAssistantDelta(event)) return null;
+      // We always launch with --stream-partial-output, so the only assistant
+      // events worth showing live are real new deltas (timestamp_ms present,
+      // model_call_id absent). Everything else repeats already-streamed text:
+      // pre-tool-call duplicate flushes (model_call_id present) and the final
+      // buffered flush at end of turn (no timestamp_ms). Skip both.
+      if (!isRealAssistantDelta(event)) return null;
       const text = extractAssistantText(event);
       return text ? text : null;
     }

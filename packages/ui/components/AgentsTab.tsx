@@ -630,7 +630,11 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
                       <span className="text-muted-foreground/50">Findings are prompt-enforced</span>
                     </div>
                     <ConfigRow label="Model" stacked>
-                      <SelectMenu value={cursorModel} options={CURSOR_MODELS} onChange={setCursorModel} />
+                      {CURSOR_MODELS.length > 1 ? (
+                        <SelectMenu value={cursorModel} options={CURSOR_MODELS} onChange={setCursorModel} />
+                      ) : (
+                        renderStaticChoice(catalogLabel(CURSOR_MODELS, cursorModel))
+                      )}
                     </ConfigRow>
                   </>
                 )}

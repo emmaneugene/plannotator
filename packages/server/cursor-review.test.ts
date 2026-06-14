@@ -255,6 +255,14 @@ describe("formatCursorLogEvent", () => {
     expect(formatCursorLogEvent("not json")).toBeNull();
     expect(formatCursorLogEvent(ndjson({ type: "user" }).trim())).toBeNull();
   });
+
+  test("skips the final buffered assistant flush (no timestamp_ms) under partial output", () => {
+    // End-of-turn flush carries no timestamp_ms and repeats already-streamed
+    // deltas — showing it would duplicate the whole assistant output in live logs.
+    expect(
+      formatCursorLogEvent(ndjson({ type: "assistant", message: { content: "FULL FLUSH" } }).trim()),
+    ).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

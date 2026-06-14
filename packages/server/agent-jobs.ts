@@ -105,6 +105,32 @@ export interface AgentJobHandlerOptions {
   onJobComplete?: (job: AgentJobInfo, meta: { outputPath?: string; stdout?: string; cwd?: string }) => void | Promise<void>;
 }
 
+/**
+ * `agent` is a very generic binary name — other tools ship binaries called
+ * `agent` too, so finding one on PATH does not prove it is Cursor. Confirm its
+ * identity before offering Cursor as a provider; otherwise selecting Cursor
+ * could spawn an unrelated tool with review content as an argument.
+ *
+ * Cheap one-time probe: `agent about --format json` is fast, works
+ * unauthenticated, and only the Cursor CLI emits a JSON object with a
+ * `cliVersion` field. Any failure/timeout/mismatch → treat as not Cursor.
+ */
+function isCursorAgentAvailable(): boolean {
+  if (!Bun.which("agent")) return false;
+  try {
+    const res = Bun.spawnSync(["agent", "about", "--format", "json"], {
+      stdout: "pipe",
+      stderr: "ignore",
+      timeout: 3000,
+    });
+    if (!res.success) return false;
+    const parsed = JSON.parse(new TextDecoder().decode(res.stdout)) as { cliVersion?: unknown };
+    return parsed != null && typeof parsed.cliVersion === "string";
+  } catch {
+    return false;
+  }
+}
+
 export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJobHandler {
   const { mode, getServerUrl, getCwd } = options;
 
@@ -120,8 +146,9 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
     { id: "claude", name: "Claude Code", available: !!Bun.which("claude") },
     { id: "codex", name: "Codex CLI", available: !!Bun.which("codex") },
     { id: "tour", name: "Code Tour", available: !!Bun.which("claude") || !!Bun.which("codex") },
-    // Cursor CLI's binary is literally named `agent` (NOT `cursor`).
-    { id: "cursor", name: "Cursor CLI", available: !!Bun.which("agent") },
+    // Cursor CLI's binary is literally named `agent` (NOT `cursor`), so verify
+    // identity rather than trusting the name alone (see isCursorAgentAvailable).
+    { id: "cursor", name: "Cursor CLI", available: isCursorAgentAvailable() },
   ];
   const capabilitiesResponse: AgentCapabilities = {
     mode,
@@ -317,8 +344,16 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
               stdout: captureStdout ? stdoutBuf : undefined,
               cwd: jobCwd,
             });
-          } catch {
-            // Result ingestion failure shouldn't prevent job completion broadcast
+          } catch (err) {
+            // Claude/Codex are fail-open: an ingestion error is logged but does
+            // not change the terminal state. Cursor is fail-closed — its findings
+            // are prompt-enforced, so an unexpected throw here must surface as a
+            // failed job rather than a green one. (The Cursor handler normally
+            // fails by mutation and never throws; this guards future refactors.)
+            if (provider === "cursor") {
+              entry.info.status = "failed";
+              entry.info.error = err instanceof Error ? err.message : "Cursor result ingestion failed";
+            }
           }
         }
         jobOutputPaths.delete(id);

@@ -64,7 +64,7 @@ export interface AgentJobHandlerOptions {
 	mode: "plan" | "review" | "annotate";
 	getServerUrl: () => string;
 	getCwd: () => string;
-	/** Server-side command builder for known providers (codex, claude, tour). */
+	/** Server-side command builder for known providers (codex, claude, tour, cursor). */
 	buildCommand?: (provider: string, config?: Record<string, unknown>) => Promise<{
 		command: string[];
 		outputPath?: string;
@@ -94,6 +94,28 @@ export interface AgentJobHandlerOptions {
 	onJobComplete?: (job: AgentJobInfo, meta: { outputPath?: string; stdout?: string; cwd?: string }) => void | Promise<void>;
 }
 
+/**
+ * `agent` is a very generic binary name — other tools ship binaries called
+ * `agent` too, so finding one on PATH does not prove it is Cursor. Verify its
+ * identity before offering Cursor as a provider. Cheap one-time probe: `agent
+ * about --format json` is fast, works unauthenticated, and only the Cursor CLI
+ * emits a JSON object with a `cliVersion` field. Any failure → not Cursor.
+ */
+function isCursorAgentAvailable(): boolean {
+	if (!whichCmd("agent")) return false;
+	try {
+		const out = execFileSync("agent", ["about", "--format", "json"], {
+			timeout: 3000,
+			stdio: ["ignore", "pipe", "ignore"],
+			encoding: "utf8",
+		});
+		const parsed = JSON.parse(out) as { cliVersion?: unknown };
+		return parsed != null && typeof parsed.cliVersion === "string";
+	} catch {
+		return false;
+	}
+}
+
 export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 	const { mode, getServerUrl, getCwd } = options;
 
@@ -108,8 +130,9 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 		{ id: "claude", name: "Claude Code", available: whichCmd("claude") },
 		{ id: "codex", name: "Codex CLI", available: whichCmd("codex") },
 		{ id: "tour", name: "Code Tour", available: whichCmd("claude") || whichCmd("codex") },
-		// Cursor CLI's binary is literally named `agent` (NOT `cursor`).
-		{ id: "cursor", name: "Cursor CLI", available: whichCmd("agent") },
+		// Cursor CLI's binary is literally named `agent` (NOT `cursor`), so verify
+		// identity rather than trusting the name alone (see isCursorAgentAvailable).
+		{ id: "cursor", name: "Cursor CLI", available: isCursorAgentAvailable() },
 	];
 	const capabilitiesResponse: AgentCapabilities = {
 		mode,
@@ -291,8 +314,15 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 							stdout: captureStdout ? stdoutBuf : undefined,
 							cwd: jobCwd,
 						});
-					} catch {
-						// Result ingestion failure shouldn't prevent job completion broadcast
+					} catch (err) {
+						// Claude/Codex are fail-open; Cursor is fail-closed — an unexpected
+						// throw during prompt-enforced ingestion must fail the job, not pass
+						// it. (The Cursor handler normally fails by mutation and never throws;
+						// this guards future refactors.)
+						if (provider === "cursor") {
+							entry.info.status = "failed";
+							entry.info.error = err instanceof Error ? err.message : "Cursor result ingestion failed";
+						}
 					}
 				}
 				jobOutputPaths.delete(id);

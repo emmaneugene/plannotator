@@ -1,5 +1,7 @@
 import { createServer } from "node:http";
-import { dirname, resolve as resolvePath } from "node:path";
+import { dirname, isAbsolute, relative, resolve as resolvePath } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 
 import { contentHash, deleteDraft } from "../generated/draft.js";
 import { saveConfig, detectGitUser, getServerConfig } from "../generated/config.js";
@@ -26,6 +28,14 @@ import {
 } from "./reference.js";
 import { warmFileListCache } from "../generated/resolve-file.js";
 import { createExternalAnnotationHandler } from "./external-annotations.js";
+import {
+	HTML_ASSET_ROUTE_PREFIX,
+	encodeHtmlAssetPath,
+	htmlAssetContentType,
+	normalizeHtmlAssetRoutePath,
+	rewriteHtmlAssetReferences,
+} from "../generated/html-assets.js";
+import { inlineHtmlLocalAssets, MAX_HTML_ASSET_BYTES } from "../generated/html-assets-node.js";
 
 export interface AnnotateServerResult {
 	port: number;
@@ -33,6 +43,105 @@ export interface AnnotateServerResult {
 	url: string;
 	waitForDecision: () => Promise<{ feedback: string; annotations: unknown[]; exit?: boolean; approved?: boolean; selectedMessageId?: string; feedbackScope?: "message" | "messages" }>;
 	stop: () => void;
+}
+
+function createHtmlAssetRegistry() {
+	const rootsByToken = new Map<string, string>();
+	const tokensByRoot = new Map<string, string>();
+
+	function register(baseDir: string): string {
+		const root = resolvePath(baseDir);
+		const existing = tokensByRoot.get(root);
+		if (existing) return existing;
+		const token = randomUUID().replace(/-/g, "").slice(0, 16);
+		tokensByRoot.set(root, token);
+		rootsByToken.set(token, root);
+		return token;
+	}
+
+	function rewriteHtml(htmlContent: string, htmlFilePath: string): string {
+		if (/^https?:\/\//i.test(htmlFilePath)) return htmlContent;
+		try {
+			const token = register(dirname(resolvePath(htmlFilePath)));
+			return rewriteHtmlAssetReferences(
+				htmlContent,
+				(assetPath) => `${HTML_ASSET_ROUTE_PREFIX}/${token}/${encodeHtmlAssetPath(assetPath)}`,
+			);
+		} catch {
+			return htmlContent;
+		}
+	}
+
+	function inlineHtml(htmlContent: string, htmlFilePath: string): string {
+		return inlineHtmlLocalAssets(htmlContent, htmlFilePath);
+	}
+
+	function handle(res: import("node:http").ServerResponse, url: URL): boolean {
+		const prefix = `${HTML_ASSET_ROUTE_PREFIX}/`;
+		if (!url.pathname.startsWith(prefix)) return false;
+
+		const rest = url.pathname.slice(prefix.length);
+		const slash = rest.indexOf("/");
+		if (slash <= 0) {
+			json(res, { error: "Missing asset token or path" }, 404);
+			return true;
+		}
+
+		const token = rest.slice(0, slash);
+		const root = rootsByToken.get(token);
+		if (!root) {
+			json(res, { error: "Unknown asset root" }, 404);
+			return true;
+		}
+
+		const assetPath = normalizeHtmlAssetRoutePath(rest.slice(slash + 1));
+		if (!assetPath) {
+			json(res, { error: "Invalid asset path" }, 400);
+			return true;
+		}
+
+		const contentType = htmlAssetContentType(assetPath);
+		if (!contentType) {
+			json(res, { error: "Unsupported asset type" }, 415);
+			return true;
+		}
+
+		const resolved = resolvePath(root, assetPath);
+		if (!isWithinDirectory(resolved, root)) {
+			json(res, { error: "Access denied" }, 403);
+			return true;
+		}
+
+		try {
+			if (!existsSync(resolved)) {
+				json(res, { error: "Asset not found" }, 404);
+				return true;
+			}
+			const stat = statSync(resolved);
+			if (stat.size > MAX_HTML_ASSET_BYTES) {
+				json(res, { error: "Asset too large" }, 413);
+				return true;
+			}
+			res.writeHead(200, {
+				"Content-Type": contentType,
+				"Cache-Control": "no-store",
+				"Access-Control-Allow-Origin": "*",
+			});
+			res.end(readFileSync(resolved));
+		} catch {
+			json(res, { error: "Failed to read asset" }, 500);
+		}
+		return true;
+	}
+
+	return { rewriteHtml, inlineHtml, handle };
+}
+
+function isWithinDirectory(filePath: string, root: string): boolean {
+	const resolved = resolvePath(filePath);
+	const resolvedRoot = resolvePath(root);
+	const rel = relative(resolvedRoot, resolved);
+	return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
 }
 
 export async function startAnnotateServer(options: {
@@ -51,6 +160,7 @@ export async function startAnnotateServer(options: {
 	gate?: boolean;
 	rawHtml?: string;
 	renderHtml?: boolean;
+	convertHtml?: boolean;
 }): Promise<AnnotateServerResult> {
 	// Side-channel pre-warm so /api/doc/exists POSTs land on warm cache.
 	void warmFileListCache(process.cwd(), "code");
@@ -93,6 +203,46 @@ export async function startAnnotateServer(options: {
 
 	const externalAnnotations = createExternalAnnotationHandler("plan");
 	const aiRuntime = await createPiAIRuntime();
+	const htmlAssets = createHtmlAssetRegistry();
+
+	function isAllowedHtmlSharePath(targetPath: string): boolean {
+		const roots = new Set<string>([process.cwd()]);
+		if (options.folderPath) roots.add(options.folderPath);
+		if (!/^https?:\/\//i.test(options.filePath)) roots.add(dirname(options.filePath));
+		for (const root of roots) {
+			if (isWithinDirectory(targetPath, root)) return true;
+		}
+		return false;
+	}
+
+	function handleShareHtml(res: import("node:http").ServerResponse, url: URL): void {
+		if (/^https?:\/\//i.test(options.filePath)) {
+			json(res, { error: "Raw HTML sharing is unavailable for URL annotations" }, 400);
+			return;
+		}
+
+		const sourcePath = resolvePath(options.filePath);
+		const requestedPath = url.searchParams.get("path")
+			? resolvePath(url.searchParams.get("path")!)
+			: sourcePath;
+		if (!/\.html?$/i.test(requestedPath)) {
+			json(res, { error: "Share HTML is only available for HTML documents" }, 400);
+			return;
+		}
+		if (!isAllowedHtmlSharePath(requestedPath)) {
+			json(res, { error: "Access denied" }, 403);
+			return;
+		}
+
+		try {
+			const htmlContent = options.renderHtml && options.rawHtml && requestedPath === sourcePath
+				? options.rawHtml
+				: readFileSync(requestedPath, "utf-8");
+			json(res, { shareHtml: htmlAssets.inlineHtml(htmlContent, requestedPath) });
+		} catch {
+			json(res, { error: "Failed to prepare share HTML" }, 500);
+		}
+	}
 
 	const server = createServer(async (req, res) => {
 		const url = requestUrl(req);
@@ -101,6 +251,9 @@ export async function startAnnotateServer(options: {
 		if (url.pathname.startsWith("/api/ai/") && await handlePiAIRequest(req, res, url, aiRuntime)) return;
 
 		if (url.pathname === "/api/plan" && req.method === "GET") {
+			const displayRawHtml = options.renderHtml && options.rawHtml
+				? htmlAssets.rewriteHtml(options.rawHtml, options.filePath)
+				: undefined;
 			json(res, {
 				plan: options.markdown,
 				origin: options.origin ?? "pi",
@@ -109,8 +262,9 @@ export async function startAnnotateServer(options: {
 				sourceInfo: options.sourceInfo,
 				sourceConverted: options.sourceConverted ?? false,
 				gate: options.gate ?? false,
-				renderAs: options.renderHtml && options.rawHtml ? 'html' : 'markdown',
-				...(options.renderHtml && options.rawHtml ? { rawHtml: options.rawHtml } : {}),
+				renderAs: displayRawHtml ? 'html' : 'markdown',
+				...(displayRawHtml ? { rawHtml: displayRawHtml } : {}),
+				convertHtml: options.convertHtml ?? false,
 				sharingEnabled,
 				shareBaseUrl,
 				pasteApiUrl,
@@ -119,6 +273,8 @@ export async function startAnnotateServer(options: {
 				serverConfig: getServerConfig(gitUser),
 				...(options.recentMessages ? { recentMessages: options.recentMessages } : {}),
 			});
+		} else if (url.pathname === "/api/share-html" && req.method === "GET") {
+			handleShareHtml(res, url);
 		} else if (url.pathname === "/api/config" && req.method === "POST") {
 			try {
 				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean };
@@ -133,6 +289,8 @@ export async function startAnnotateServer(options: {
 			}
 		} else if (url.pathname === "/api/image") {
 			handleImageRequest(res, url);
+		} else if (htmlAssets.handle(res, url)) {
+			return;
 		} else if (url.pathname === "/api/upload" && req.method === "POST") {
 			await handleUploadRequest(req, res);
 		} else if (url.pathname === "/api/draft") {
@@ -143,7 +301,12 @@ export async function startAnnotateServer(options: {
 			if (!url.searchParams.has("base") && options.filePath && !/^https?:\/\//i.test(options.filePath)) {
 				url.searchParams.set("base", dirname(resolvePath(options.filePath)));
 			}
-			await handleDocRequest(res, url);
+			if (options.convertHtml && !url.searchParams.has("convert")) {
+				url.searchParams.set("convert", "1");
+			}
+			await handleDocRequest(res, url, {
+				rewriteHtml: htmlAssets.rewriteHtml,
+			});
 		} else if (url.pathname === "/api/doc/exists" && req.method === "POST") {
 			await handleDocExistsRequest(res, req);
 		} else if (url.pathname === "/api/obsidian/vaults") {

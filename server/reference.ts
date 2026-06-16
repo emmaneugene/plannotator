@@ -38,6 +38,10 @@ import { preloadFile } from "@pierre/diffs/ssr";
 
 type Res = ServerResponse;
 
+export interface HandleDocOptions {
+	rewriteHtml?: (html: string, filepath: string) => string;
+}
+
 /** Recursively walk a directory collecting files by extension, skipping ignored dirs. */
 function walkMarkdownFiles(dir: string, root: string, results: string[], extensions: RegExp = /\.(mdx?|html?)$/i): void {
 	let entries: Dirent[];
@@ -60,7 +64,7 @@ function walkMarkdownFiles(dir: string, root: string, results: string[], extensi
 }
 
 /** Serve a linked markdown document. Uses shared resolveMarkdownFile for parity with Bun server. */
-export async function handleDocRequest(res: Res, url: URL): Promise<void> {
+export async function handleDocRequest(res: Res, url: URL, options: HandleDocOptions = {}): Promise<void> {
 	const requestedPath = url.searchParams.get("path");
 	if (!requestedPath) {
 		json(res, { error: "Missing path parameter" }, 400);
@@ -77,6 +81,7 @@ export async function handleDocRequest(res: Res, url: URL): Promise<void> {
 	// block below (no base) retains its cwd-based containment check.
 	const base = url.searchParams.get("base");
 	const resolvedBase = base ? resolveUserPath(base) : null;
+	const convert = url.searchParams.get("convert") === "1";
 	if (
 		resolvedBase &&
 		!isAbsoluteUserPath(requestedPath) &&
@@ -87,8 +92,13 @@ export async function handleDocRequest(res: Res, url: URL): Promise<void> {
 			if (existsSync(fromBase)) {
 				const raw = readFileSync(fromBase, "utf-8");
 				const isHtml = /\.html?$/i.test(requestedPath);
+				if (isHtml && !convert) {
+					const rawHtml = options.rewriteHtml ? options.rewriteHtml(raw, fromBase) : raw;
+					json(res, { rawHtml, renderAs: "html", filepath: fromBase });
+					return;
+				}
 				const markdown = isHtml ? htmlToMarkdown(raw) : raw;
-				json(res, { markdown, filepath: fromBase, isConverted: isHtml });
+				json(res, { markdown, filepath: fromBase, isConverted: isHtml, renderAs: "markdown" });
 				return;
 			}
 		} catch {
@@ -107,7 +117,12 @@ export async function handleDocRequest(res: Res, url: URL): Promise<void> {
 		try {
 			if (existsSync(resolvedHtml)) {
 				const html = readFileSync(resolvedHtml, "utf-8");
-				json(res, { markdown: htmlToMarkdown(html), filepath: resolvedHtml, isConverted: true });
+				if (!convert) {
+					const rawHtml = options.rewriteHtml ? options.rewriteHtml(html, resolvedHtml) : html;
+					json(res, { rawHtml, renderAs: "html", filepath: resolvedHtml });
+					return;
+				}
+				json(res, { markdown: htmlToMarkdown(html), filepath: resolvedHtml, isConverted: true, renderAs: "markdown" });
 				return;
 			}
 		} catch { /* fall through to 404 */ }

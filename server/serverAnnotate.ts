@@ -5,6 +5,13 @@ import { randomUUID } from "node:crypto";
 
 import { contentHash, deleteDraft } from "../generated/draft.js";
 import { saveConfig, detectGitUser, getServerConfig } from "../generated/config.js";
+import { disabledSourceSave, type SourceSaveRequest } from "../generated/source-save.js";
+import {
+	createSourceSaveCapability,
+	readSourceFileSnapshot,
+	resolveFolderSourceFile,
+	saveSourceFileAtomic,
+} from "../generated/source-save-node.js";
 
 import {
 	handleDraftRequest,
@@ -244,6 +251,57 @@ export async function startAnnotateServer(options: {
 		}
 	}
 
+	const getPrimarySource = () => {
+		const mode = options.mode || "annotate";
+		if (mode === "annotate-last") {
+			return { plan: options.markdown, sourceSave: disabledSourceSave("message-mode") };
+		}
+		if (mode === "annotate-folder") {
+			return { plan: options.markdown, sourceSave: disabledSourceSave("folder-mode") };
+		}
+		if (options.renderHtml && options.rawHtml) {
+			return { plan: options.markdown, sourceSave: disabledSourceSave("html-render") };
+		}
+		if (options.sourceConverted) {
+			return { plan: options.markdown, sourceSave: disabledSourceSave("converted-source") };
+		}
+		if (/^https?:\/\//i.test(options.filePath)) {
+			return { plan: options.markdown, sourceSave: disabledSourceSave("not-local-file") };
+		}
+
+		const sourceSave = createSourceSaveCapability("single-file", options.filePath);
+		if (!sourceSave.enabled) {
+			return { plan: options.markdown, sourceSave };
+		}
+
+		try {
+			const snapshot = readSourceFileSnapshot(sourceSave.path);
+			return {
+				plan: snapshot.text,
+				sourceSave: {
+					...sourceSave,
+					hash: snapshot.hash,
+					mtimeMs: snapshot.mtimeMs,
+					size: snapshot.size,
+					eol: snapshot.eol,
+				},
+			};
+		} catch {
+			return { plan: options.markdown, sourceSave: disabledSourceSave("unreadable-file") };
+		}
+	};
+
+	const getReferenceRootPaths = () => {
+		const mode = options.mode || "annotate";
+		if (mode === "annotate-folder" && options.folderPath) {
+			return [options.folderPath];
+		}
+		if (/^https?:\/\//i.test(options.filePath)) {
+			return [process.cwd()];
+		}
+		return [process.cwd(), dirname(resolvePath(options.filePath))];
+	};
+
 	const server = createServer(async (req, res) => {
 		const url = requestUrl(req);
 
@@ -254,13 +312,15 @@ export async function startAnnotateServer(options: {
 			const displayRawHtml = options.renderHtml && options.rawHtml
 				? htmlAssets.rewriteHtml(options.rawHtml, options.filePath)
 				: undefined;
+			const primarySource = getPrimarySource();
 			json(res, {
-				plan: options.markdown,
+				plan: primarySource.plan,
 				origin: options.origin ?? "pi",
 				mode: options.mode || "annotate",
 				filePath: options.filePath,
 				sourceInfo: options.sourceInfo,
 				sourceConverted: options.sourceConverted ?? false,
+				sourceSave: primarySource.sourceSave,
 				gate: options.gate ?? false,
 				renderAs: displayRawHtml ? 'html' : 'markdown',
 				...(displayRawHtml ? { rawHtml: displayRawHtml } : {}),
@@ -299,16 +359,56 @@ export async function startAnnotateServer(options: {
 			// Inject source file's directory as base for relative path resolution.
 			// Skip for URL annotations — there's no local directory to resolve against.
 			if (!url.searchParams.has("base") && options.filePath && !/^https?:\/\//i.test(options.filePath)) {
-				url.searchParams.set("base", dirname(resolvePath(options.filePath)));
+				url.searchParams.set("base", options.mode === "annotate-folder" && options.folderPath ? options.folderPath : dirname(resolvePath(options.filePath)));
 			}
 			if (options.convertHtml && !url.searchParams.has("convert")) {
 				url.searchParams.set("convert", "1");
 			}
 			await handleDocRequest(res, url, {
 				rewriteHtml: htmlAssets.rewriteHtml,
+				sourceSaveFolderPath: options.mode === "annotate-folder" ? options.folderPath : undefined,
+				rootPaths: getReferenceRootPaths(),
 			});
+		} else if (url.pathname === "/api/source/save" && req.method === "POST") {
+			let body: SourceSaveRequest;
+			try {
+				body = (await parseBody(req)) as unknown as SourceSaveRequest;
+			} catch {
+				json(res, { ok: false, code: "invalid-request", message: "Invalid JSON body." }, 400);
+				return;
+			}
+
+			if (typeof body.text !== "string" || typeof body.baseHash !== "string") {
+				json(res, { ok: false, code: "invalid-request", message: "Expected text and baseHash." }, 400);
+				return;
+			}
+
+			let targetPath: string | null = null;
+			if ((options.mode || "annotate") === "annotate" && !options.sourceConverted && !(options.renderHtml && options.rawHtml)) {
+				const capability = createSourceSaveCapability("single-file", options.filePath);
+				targetPath = capability.enabled ? capability.path : null;
+			} else if (options.mode === "annotate-folder" && options.folderPath && typeof body.path === "string") {
+				targetPath = resolveFolderSourceFile(body.path, options.folderPath);
+			}
+
+			if (!targetPath) {
+				json(res, { ok: false, code: "not-writable", message: "This document cannot be saved to a file." }, 403);
+				return;
+			}
+
+			const result = saveSourceFileAtomic(targetPath, body.text, body.baseHash);
+			const status = result.ok
+				? 200
+				: result.code === "conflict"
+					? 409
+					: result.code === "invalid-request"
+						? 400
+						: result.code === "not-writable"
+							? 403
+							: 500;
+			json(res, result, status);
 		} else if (url.pathname === "/api/doc/exists" && req.method === "POST") {
-			await handleDocExistsRequest(res, req);
+			await handleDocExistsRequest(res, req, { rootPaths: getReferenceRootPaths() });
 		} else if (url.pathname === "/api/obsidian/vaults") {
 			handleObsidianVaultsRequest(res);
 		} else if (url.pathname === "/api/reference/obsidian/files" && req.method === "GET") {

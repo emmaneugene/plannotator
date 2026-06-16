@@ -490,7 +490,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 			// (scoped-package-style names).
 			const { filePath, rawFilePath, gate, renderMarkdown: renderMarkdownFlag, noJina } = parseAnnotateArgs(args ?? "");
 			if (!filePath) {
-				ctx.ui.notify("Usage: /plannotator-annotate <file.md | file.html | https://... | folder/> [--markdown] [--no-jina] [--gate] [--json]", "error");
+				ctx.ui.notify("Usage: /plannotator-annotate <file.md | file.txt | file.html | https://... | folder/> [--markdown] [--no-jina] [--gate] [--json]", "error");
 				return;
 			}
 			if (!hasPlanBrowserHtml()) {
@@ -550,8 +550,8 @@ export default function plannotator(pi: ExtensionAPI): void {
 				}
 
 				if (isFolder) {
-					if (!hasMarkdownFiles(absolutePath, FILE_BROWSER_EXCLUDED, /\.(mdx?|html?)$/i)) {
-						ctx.ui.notify(`No markdown or HTML files found in ${absolutePath}`, "error");
+					if (!hasMarkdownFiles(absolutePath, FILE_BROWSER_EXCLUDED, /\.(mdx?|txt|html?)$/i)) {
+						ctx.ui.notify(`No markdown, text, or HTML files found in ${absolutePath}`, "error");
 						return;
 					}
 					markdown = "";
@@ -571,6 +571,10 @@ export default function plannotator(pi: ExtensionAPI): void {
 					sourceInfo = basename(absolutePath);
 					ctx.ui.notify(`Opening annotation UI for ${filePath}...`, "info");
 				} else {
+					if (!/\.(mdx?|txt)$/i.test(absolutePath)) {
+						ctx.ui.notify("Only .md, .mdx, .txt, .html, .htm files are supported.", "error");
+						return;
+					}
 					markdown = readFileSync(absolutePath, "utf-8");
 					ctx.ui.notify(`Opening annotation UI for ${filePath}...`, "info");
 				}

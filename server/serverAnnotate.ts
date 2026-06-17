@@ -17,6 +17,7 @@ import {
 	handleDraftRequest,
 	handleFavicon,
 	handleImageRequest,
+	handleSaveNotesRequest,
 	handleUploadRequest,
 } from "./handlers.js";
 import { html, json, parseBody, requestUrl } from "./helpers.js";
@@ -455,6 +456,8 @@ export async function startAnnotateServer(options: {
 				const message = err instanceof Error ? err.message : "Failed to process feedback";
 				json(res, { error: message }, 500);
 			}
+		} else if (url.pathname === "/api/save-notes" && req.method === "POST") {
+			await handleSaveNotesRequest(req, res);
 		} else {
 			html(res, options.htmlContent);
 		}

@@ -13,6 +13,7 @@ import {
   runGitDiff,
   runVcsDiff,
   stageFile,
+  startPlanReviewServer,
   startReviewServer,
   unstageFile,
 } from "./server";
@@ -30,6 +31,28 @@ function makeTempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   tempDirs.push(dir);
   return dir;
+}
+
+function writeTempFile(root: string, relativePath: string, content = "x"): string {
+  const full = join(root, relativePath);
+  mkdirSync(join(full, ".."), { recursive: true });
+  writeFileSync(full, content, "utf-8");
+  return full;
+}
+
+interface PiTreeNode {
+  path: string;
+  type: "file" | "folder";
+  children?: PiTreeNode[];
+}
+
+function flattenTree(nodes: PiTreeNode[]): string[] {
+  const paths: string[] = [];
+  for (const node of nodes) {
+    if (node.type === "file") paths.push(node.path);
+    else paths.push(...flattenTree(node.children ?? []));
+  }
+  return paths;
 }
 
 function childEnv(): NodeJS.ProcessEnv {
@@ -963,4 +986,49 @@ describe("pi review server", () => {
       server.stop();
     }
   }, 20_000);
+});
+
+describe("pi plan server file browser", () => {
+  test("filters excluded folders from tree and workspace status", async () => {
+    const repo = makeTempDir("plannotator-pi-files-");
+    const dataDir = makeTempDir("plannotator-pi-files-data-");
+    process.env.PLANNOTATOR_DATA_DIR = dataDir;
+    process.env.PLANNOTATOR_PORT = String(await reservePort());
+    process.chdir(repo);
+
+    git(repo, ["init"]);
+    git(repo, ["branch", "-M", "main"]);
+    git(repo, ["config", "user.email", "pi-files@example.com"]);
+    git(repo, ["config", "user.name", "Pi Files"]);
+    writeTempFile(repo, "docs/visible.md", "visible\n");
+    writeTempFile(repo, "dist/generated.md", "before\n");
+    git(repo, ["add", "-A"]);
+    git(repo, ["commit", "-m", "initial"]);
+
+    writeTempFile(repo, "dist/generated.md", "after\n");
+    writeTempFile(repo, "packages/app/node_modules/pkg/readme.md", "hidden\n");
+
+    const server = await startPlanReviewServer({
+      plan: "# Plan",
+      origin: "pi",
+      htmlContent: "<!doctype html><html><body>plan</body></html>",
+    });
+
+    try {
+      const url = new URL(`${server.url}/api/reference/files`);
+      url.searchParams.set("dirPath", repo);
+      const response = await fetch(url);
+      const payload = await response.json() as {
+        tree: PiTreeNode[];
+        workspaceStatus: { totals: { files: number }; files: Record<string, unknown> };
+      };
+
+      expect(response.status).toBe(200);
+      expect(flattenTree(payload.tree)).toEqual(["docs/visible.md"]);
+      expect(payload.workspaceStatus.totals.files).toBe(0);
+      expect(payload.workspaceStatus.files).toEqual({});
+    } finally {
+      server.stop();
+    }
+  });
 });

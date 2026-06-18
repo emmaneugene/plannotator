@@ -20,7 +20,6 @@ import type { IncomingMessage } from "node:http";
 import {
 	type VaultNode,
 	buildFileTree,
-	FILE_BROWSER_EXCLUDED,
 	isFileBrowserExcludedPath,
 } from "../generated/reference-common.js";
 import {
@@ -194,13 +193,13 @@ function walkMarkdownFiles(dir: string, root: string, results: string[], extensi
 		return;
 	}
 	for (const entry of entries) {
+		const relative = join(dir, entry.name)
+			.slice(root.length + 1)
+			.replace(/\\/g, "/");
 		if (entry.isDirectory()) {
-			if (FILE_BROWSER_EXCLUDED.includes(entry.name + "/")) continue;
+			if (isFileBrowserExcludedPath(relative)) continue;
 			walkMarkdownFiles(join(dir, entry.name), root, results, extensions);
 		} else if (entry.isFile() && extensions.test(entry.name)) {
-			const relative = join(dir, entry.name)
-				.slice(root.length + 1)
-				.replace(/\\/g, "/");
 			if (isFileBrowserExcludedPath(relative)) continue;
 			results.push(relative);
 		}
@@ -508,7 +507,7 @@ export function handleObsidianDocRequest(res: Res, url: URL): void {
 	}
 }
 
-export function handleFileBrowserRequest(res: Res, url: URL): void {
+export async function handleFileBrowserRequest(res: Res, url: URL): Promise<void> {
 	const dirPath = url.searchParams.get("dirPath");
 	if (!dirPath) {
 		json(res, { error: "Missing dirPath parameter" }, 400);
@@ -524,7 +523,7 @@ export function handleFileBrowserRequest(res: Res, url: URL): void {
 		const diskFiles: string[] = [];
 		walkMarkdownFiles(resolvedDir, resolvedDir, diskFiles);
 		for (const file of diskFiles) files.add(file);
-		const workspaceStatus = filterWorkspaceStatusForDirectory(getWorkspaceStatusForDirectory(resolvedDir), resolvedDir, includeWorkspaceFile);
+		const workspaceStatus = filterWorkspaceStatusForDirectory(await getWorkspaceStatusForDirectory(resolvedDir), resolvedDir, includeWorkspaceFile);
 		for (const file of getWorkspaceStatusRelativePaths(workspaceStatus, resolvedDir, includeWorkspaceFile)) {
 			files.add(file);
 		}

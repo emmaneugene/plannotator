@@ -284,7 +284,7 @@ export async function startPlanReviewServer(options: {
 		} else if (url.pathname === "/api/reference/obsidian/doc" && req.method === "GET") {
 			handleObsidianDocRequest(res, url);
 		} else if (url.pathname === "/api/reference/files" && req.method === "GET") {
-			handleFileBrowserRequest(res, url);
+			await handleFileBrowserRequest(res, url);
 		} else if (url.pathname === "/api/reference/files/stream" && req.method === "GET") {
 			handleFileBrowserStreamRequest(req, res, url);
 			return;

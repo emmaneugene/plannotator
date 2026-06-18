@@ -31,7 +31,7 @@ function serialize(event: FileBrowserChangeEvent): string {
 	return `data: ${JSON.stringify(event)}\n\n`;
 }
 
-function isExcludedPath(path: string, root: string): boolean {
+export function isFileBrowserWatchIgnoredPath(path: string, root: string): boolean {
 	const rel = relative(root, path).replace(/\\/g, "/");
 	if (!rel || rel.startsWith("..") || isAbsolute(rel)) return false;
 	return isFileBrowserExcludedPath(rel);
@@ -73,7 +73,9 @@ function closeWatcher(entry: WatchEntry): void {
 	if (entry.debounceTimer) clearTimeout(entry.debounceTimer);
 	void entry.contentWatcher?.close();
 	void entry.gitWatcher?.close();
-	watchers.delete(entry.dirPath);
+	if (watchers.get(entry.dirPath) === entry) {
+		watchers.delete(entry.dirPath);
+	}
 }
 
 function releaseSubscriber(entry: WatchEntry, res: ServerResponse): void {
@@ -96,7 +98,7 @@ function ensureWatcher(dirPath: string): WatchEntry {
 	entry.contentWatcher = chokidar.watch(dirPath, {
 		ignoreInitial: true,
 		persistent: true,
-		ignored: (path) => isExcludedPath(path, dirPath),
+		ignored: (path) => isFileBrowserWatchIgnoredPath(path, dirPath),
 		awaitWriteFinish: {
 			stabilityThreshold: 120,
 			pollInterval: 30,

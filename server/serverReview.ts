@@ -52,6 +52,8 @@ import {
 	handleDraftRequest,
 	handleFavicon,
 	handleImageRequest,
+	readDraftGenerationFromBody,
+	readDraftGenerationFromUrl,
 	handleUploadRequest,
 } from "./handlers.js";
 import { html, json, parseBody, requestUrl } from "./helpers.js";
@@ -1457,13 +1459,13 @@ export async function startReviewServer(options: {
 			// the original dispatch chain.
 			html(res, options.htmlContent);
 		} else if (url.pathname === "/api/exit" && req.method === "POST") {
-			deleteDraft(draftKey);
+			deleteDraft(draftKey, readDraftGenerationFromUrl(req));
 			resolveDecision({ approved: false, feedback: '', annotations: [], exit: true });
 			json(res, { ok: true });
 		} else if (url.pathname === "/api/feedback" && req.method === "POST") {
 			try {
 				const body = await parseBody(req);
-				deleteDraft(draftKey);
+				deleteDraft(draftKey, readDraftGenerationFromBody(body));
 				resolveDecision({
 					approved: (body.approved as boolean) ?? false,
 					feedback: (body.feedback as string) || "",

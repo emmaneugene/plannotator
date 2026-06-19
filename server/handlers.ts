@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
-import { saveDraft, loadDraft, deleteDraft } from "../generated/draft.js";
+import { saveDraft, loadDraft, deleteDraft, getDraftGeneration } from "../generated/draft.js";
 import { FAVICON_SVG } from "../generated/favicon.js";
 
 import { json, parseBody, send, toWebRequest } from "./helpers";
@@ -199,17 +199,34 @@ export function handleDraftRequest(
 				json(res, { error: message }, 500);
 			});
 	} else if (req.method === "DELETE") {
-		deleteDraft(draftKey);
+		deleteDraft(draftKey, readDraftGenerationFromUrl(req));
 		json(res, { ok: true });
 	} else {
 		const draft = loadDraft(draftKey);
 		if (!draft) {
-			json(res, { found: false }, 404);
+			const draftGeneration = getDraftGeneration(draftKey);
+			json(res, { found: false, ...(draftGeneration !== null ? { draftGeneration } : {}) }, 404);
 			return;
 		}
 		json(res, draft);
 	}
 }
+
+function readDraftGenerationFromUrl(req: IncomingMessage): number | undefined {
+	const url = new URL(req.url ?? "/", "http://localhost");
+	const raw = url.searchParams.get("generation") ?? url.searchParams.get("draftGeneration");
+	if (raw === null) return undefined;
+	const value = Number(raw);
+	return Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+export function readDraftGenerationFromBody(body: unknown): number | undefined {
+	if (!body || typeof body !== "object") return undefined;
+	const value = (body as { draftGeneration?: unknown }).draftGeneration;
+	return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+export { readDraftGenerationFromUrl };
 
 export function handleFavicon(res: Res): void {
 	send(res, FAVICON_SVG, 200, {

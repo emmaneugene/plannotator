@@ -559,6 +559,7 @@ export async function startMarkdownAnnotationSession(
 		sharingEnabled: resolveSharingEnabled(loadConfig()),
 		shareBaseUrl: process.env.PLANNOTATOR_SHARE_URL || undefined,
 		pasteApiUrl: process.env.PLANNOTATOR_PASTE_URL || undefined,
+		agentCwd: ctx.cwd,
 	});
 
 	return startBrowserDecisionSession(server, ctx, server.waitForDecision);

@@ -468,16 +468,35 @@ describe("pi review server", () => {
       const draftMissing = await fetch(`${server.url}/api/draft`);
       expect(draftMissing.status).toBe(404);
 
+      const generatedDraft = { codeAnnotations: [{ id: "stale-draft" }], draftGeneration: 5 };
+      const generatedDraftSave = await fetch(`${server.url}/api/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(generatedDraft),
+      });
+      expect(generatedDraftSave.status).toBe(200);
+
       const feedbackResponse = await fetch(`${server.url}/api/feedback`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          draftGeneration: 5,
           approved: false,
           feedback: "Please update the diff",
           annotations: [{ id: "note-1" }],
         }),
       });
       expect(feedbackResponse.status).toBe(200);
+
+      const lateDraftSave = await fetch(`${server.url}/api/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(generatedDraft),
+      });
+      expect(lateDraftSave.status).toBe(200);
+      const lateDraftLoad = await fetch(`${server.url}/api/draft`);
+      expect(lateDraftLoad.status).toBe(404);
+      expect(await lateDraftLoad.json()).toEqual({ found: false, draftGeneration: 5 });
 
       await expect(server.waitForDecision()).resolves.toEqual({
         approved: false,

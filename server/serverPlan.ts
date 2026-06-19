@@ -21,6 +21,7 @@ import {
 	handleDraftRequest,
 	handleFavicon,
 	handleImageRequest,
+	readDraftGenerationFromBody,
 	handleSaveNotesRequest,
 	handleUploadRequest,
 } from "./handlers.js";
@@ -338,8 +339,10 @@ export async function startPlanReviewServer(options: {
 			let requestedPermissionMode: string | undefined;
 			let planSaveEnabled = true;
 			let planSaveCustomPath: string | undefined;
+			let draftGeneration: number | undefined;
 			try {
 				const body = await parseBody(req);
+				draftGeneration = readDraftGenerationFromBody(body);
 				if (body.feedback) feedback = body.feedback as string;
 				if (body.agentSwitch) agentSwitch = body.agentSwitch as string;
 				if (body.permissionMode)
@@ -397,7 +400,7 @@ export async function startPlanReviewServer(options: {
 					planSaveCustomPath,
 				);
 			}
-			deleteDraft(draftKey);
+			deleteDraft(draftKey, draftGeneration);
 			const effectivePermissionMode = requestedPermissionMode || options.permissionMode;
 			publishDecision({
 				approved: true,
@@ -415,8 +418,10 @@ export async function startPlanReviewServer(options: {
 			let feedback = "Plan rejected by user";
 			let planSaveEnabled = true;
 			let planSaveCustomPath: string | undefined;
+			let draftGeneration: number | undefined;
 			try {
 				const body = await parseBody(req);
+				draftGeneration = readDraftGenerationFromBody(body);
 				feedback = (body.feedback as string) || feedback;
 				if (body.planSave !== undefined) {
 					const ps = body.planSave as { enabled: boolean; customPath?: string };
@@ -437,7 +442,7 @@ export async function startPlanReviewServer(options: {
 					planSaveCustomPath,
 				);
 			}
-			deleteDraft(draftKey);
+			deleteDraft(draftKey, draftGeneration);
 			publishDecision({ approved: false, feedback, savedPath });
 			json(res, { ok: true, savedPath });
 		} else {

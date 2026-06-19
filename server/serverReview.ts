@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
 import os from "node:os";
-import { basename } from "node:path";
+import { basename, resolve as resolvePath } from "node:path";
 
 import { contentHash, deleteDraft } from "../generated/draft.js";
 import { loadConfig, saveConfig, detectGitUser, getServerConfig, resolveSharingEnabled } from "../generated/config.js";
@@ -58,6 +58,8 @@ import { html, json, parseBody, requestUrl } from "./helpers.js";
 import { createPiAIRuntime, handlePiAIRequest } from "./ai-runtime.js";
 
 import { isRemoteSession, listenOnPort } from "./network.js";
+import { getAvailableOpenInApps, openFileInApp } from "./open-in-apps.js";
+import { resolveOpenInTarget } from "../generated/html-assets-node.js";
 import {
 	fetchPR,
 	fetchPRContext,
@@ -386,6 +388,29 @@ export async function startReviewServer(options: {
 		if (options.agentCwd) return options.agentCwd;
 		return resolveVcsCwd(currentDiffType as DiffType, options.gitContext?.cwd) ?? process.cwd();
 	}
+	// The current PR's local checkout if one is usable, else null. Mirrors the
+	// Bun review server's resolvePRLocalCwd: a pool entry that exists but isn't
+	// ready yet yields null (no usable checkout), distinct from resolveAgentCwd
+	// which always falls back to a cwd for agent/launch resolution. Used to
+	// advertise the Open-in root to the client without a page reload.
+	function resolvePRLocalCwd(): string | null {
+		const pool = options.worktreePool;
+		if (pool && prMeta) {
+			const entry = pool.get(prMeta.url);
+			if (entry?.ready) return entry.path;
+			if (entry) return null;
+		}
+		return options.agentCwd && existsSync(options.agentCwd) ? options.agentCwd : null;
+	}
+	// Strict launch root for /api/open-in: in PR pool mode only the PR's own
+	// checkout is acceptable — never the launch-repo fallback resolveAgentCwd
+	// uses. Returns [] until ready so resolveOpenInTarget rejects (the button is
+	// gated off then anyway); non-PR resolves to the working tree as usual.
+	function resolveOpenInRoot(): string | string[] {
+		if (workspace) return workspace.root;
+		if (options.worktreePool && prMeta) return resolvePRLocalCwd() ?? [];
+		return options.agentCwd ?? resolveVcsCwd(currentDiffType as DiffType, options.gitContext?.cwd) ?? process.cwd();
+	}
 	function getWorkspacePromptContext(): WorkspaceReviewPromptContext | undefined {
 		if (!workspace) return undefined;
 		return workspace.getPromptContext();
@@ -696,8 +721,16 @@ export async function startReviewServer(options: {
 				pasteApiUrl,
 				repoInfo,
 				isWSL: wslFlag,
-				...(options.agentCwd && { agentCwd: options.agentCwd }),
-				...(workspace && { agentCwd: workspace.root }),
+				// PR mode advertises the ready PR checkout (null while warming), so
+				// the Open-in button gates correctly from the initial load — not the
+				// launch repo. Non-PR keeps the workspace/local cwd.
+				...(isPRMode
+					? { agentCwd: resolvePRLocalCwd() }
+					: workspace
+						? { agentCwd: workspace.root }
+						: options.agentCwd
+							? { agentCwd: options.agentCwd }
+							: {}),
 				...(isPRMode && {
 					prMetadata: prMeta,
 					platformUser,
@@ -716,9 +749,15 @@ export async function startReviewServer(options: {
 			// Cheap staleness probe — has the underlying VCS state changed since
 			// the current diff snapshot was computed? Best-effort: anything that
 			// cannot be fingerprinted reports fresh (no banner).
+			// In PR review the local checkout can appear (pool warmup) or change
+			// (in-place PR switch) after the initial /api/diff, so re-advertise it
+			// on every probe — the Open-in control tracks the current checkout
+			// without a page reload. Null until a usable checkout exists (the pool
+			// resolves a path only once ready). Non-PR sessions omit this field.
+			const prCwdAdvert = isPRMode ? { agentCwd: resolvePRLocalCwd() } : {};
 			const baseline = currentFingerprint;
 			if (baseline == null) {
-				json(res, { fresh: true });
+				json(res, { fresh: true, ...prCwdAdvert });
 				return;
 			}
 			const probe = await computeDiffFingerprint();
@@ -726,13 +765,13 @@ export async function startReviewServer(options: {
 			// fingerprint); report fresh and let the next poll compare against
 			// the new baseline.
 			if (currentFingerprint !== baseline) {
-				json(res, { fresh: true });
+				json(res, { fresh: true, ...prCwdAdvert });
 				return;
 			}
 			const fresh = probe == null || probe === baseline;
 			// The probe fingerprint lets the client distinguish "still the same
 			// staleness I dismissed" from "ANOTHER change landed since".
-			json(res, { fresh, ...(fresh ? {} : { fingerprint: probe }) });
+			json(res, { fresh, ...(fresh ? {} : { fingerprint: probe }), ...prCwdAdvert });
 		} else if (url.pathname === "/api/semantic-diff" && req.method === "GET") {
 			json(res, await getSemanticDiff(url));
 		} else if (url.pathname === "/api/diff/switch" && req.method === "POST") {
@@ -1013,6 +1052,9 @@ export async function startReviewServer(options: {
 					rawPatch: currentPatch,
 					gitRef: currentGitRef,
 					prMetadata: pr.metadata,
+					// The new PR's checkout (null while warming) so Open-in re-roots
+					// immediately on switch instead of waiting for the 5s probe.
+					agentCwd: resolvePRLocalCwd() ?? null,
 					prStackInfo,
 					prStackTree,
 					prDiffScope: currentPRDiffScope,
@@ -1345,6 +1387,46 @@ export async function startReviewServer(options: {
 				const message =
 					err instanceof Error ? err.message : "Failed to stage file";
 				json(res, { error: message }, 500);
+			}
+		} else if (url.pathname === "/api/open-in/apps" && req.method === "GET") {
+			// Remote/headless sessions can't open apps on the user's machine —
+			// report unavailable so the UI hides the control entirely.
+			if (isRemote) {
+				json(res, { available: false, apps: [] });
+				return;
+			}
+			json(res, { available: true, apps: getAvailableOpenInApps() });
+		} else if (url.pathname === "/api/open-in" && req.method === "POST") {
+			if (isRemote) {
+				json(res, { ok: false, error: "Open in app is unavailable in remote sessions" }, 400);
+				return;
+			}
+			try {
+				const body = await parseBody(req);
+				const filePath = body.filePath;
+				if (typeof filePath !== "string" || !filePath) {
+					json(res, { ok: false, error: "Missing filePath" }, 400);
+					return;
+				}
+				const appId = typeof body.appId === "string" ? body.appId : undefined;
+				// Resolve repo-relative `git diff` paths against the VCS root
+				// server-side (resolveAgentCwd folds in workspace.root, the PR
+				// local checkout, resolveVcsCwd(gitContext.cwd), and process.cwd())
+				// — not the client `base`, which is wrong when review runs from a
+				// subdirectory — then containment-check.
+				const abs = resolveOpenInTarget(filePath, null, resolveOpenInRoot);
+				if (abs == null) {
+					json(res, { ok: false, error: "Path is outside the allowed directory" }, 403);
+					return;
+				}
+				const result = await openFileInApp(abs, appId);
+				json(res, result, 200);
+			} catch (err) {
+				json(
+					res,
+					{ ok: false, error: err instanceof Error ? err.message : "Failed to open file" },
+					500,
+				);
 			}
 		} else if (url.pathname === "/api/draft") {
 			await handleDraftRequest(req, res, draftKey);

@@ -896,7 +896,7 @@ const App: React.FC = () => {
 
   const buildMessageAnnotationEntries = React.useCallback((): MessageAnnotationEntry[] => {
     if (annotateSource !== 'message' || recentMessages.length === 0) return [];
-    const states = saveCurrentMessageState();
+    const states = getMessageStatesWithCurrent();
     return recentMessages.map((msg) => {
       const state = states.get(msg.messageId) ?? createEmptyMessageState(msg);
       const linkedDocs: Map<string, LinkedDocAnnotationEntry> = new Map();
@@ -917,7 +917,7 @@ const App: React.FC = () => {
         codeAnnotations: state.codeAnnotations,
       };
     });
-  }, [annotateSource, recentMessages, saveCurrentMessageState]);
+  }, [annotateSource, recentMessages, getMessageStatesWithCurrent]);
 
   const activeMessageAnnotationCounts = React.useMemo(() => {
     const counts = new Map(cachedMessageAnnotationCounts);
